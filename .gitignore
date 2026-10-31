@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.tmp/
+samples/
+test-artifacts/
+*.log
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+.cache/
+*.pt
+*.pth
+*.onnx
