@@ -2,11 +2,12 @@
 本地单 worker 的 emotion2vec HTTP 服务。
 """
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 import json
 import logging
 import math
 import os
+from numbers import Real
 from pathlib import Path
 import shutil
 import subprocess
@@ -128,6 +129,34 @@ class BodyLimitMiddleware:
 app.add_middleware(BodyLimitMiddleware)
 
 
+def predict_samples(state, samples, filename):
+    """Run the shared model under its lock and validate aligned English output."""
+    # Passing decoded samples avoids torchaudio/torchcodec file-decoder dependencies.
+    # 传入已解码样本，避免依赖 torchaudio/torchcodec 的文件解码器。
+    # The thread lock prevents simultaneous calls into the shared model.
+    # 锁使同一进程内一次只有一个线程进入此模型调用；output 保存模型返回的结果列表。
+    with state.lock:
+        output = state.model.generate(input=samples, fs=16000,
+                                      granularity="utterance", extract_embedding=False)
+    # Validate the model contract before exposing scores as JSON.
+    # 单文件应只有一个结果；取其中的 labels/scores，并检查九类、数值有效且在 0 到 1 之间。
+    if not isinstance(output, list) or len(output) != 1:
+        raise ValueError("Expected one model result")
+    labels = list(output[0]["labels"])
+    scores = [float(s) for s in output[0]["scores"]]
+    if (len(labels) != 9 or len(scores) != len(labels)
+            or not all(isinstance(label, str) for label in labels)
+            or not all(math.isfinite(s) and 0 <= s <= 1 for s in scores)):
+        raise ValueError("Invalid nine-class model output")
+    # Expose English labels in the same order as the unchanged scores.
+    labels = [english_label(label) for label in labels]
+    # Use the returned label order rather than assuming a fixed class mapping.
+    # 例如 scores=[0.2, 0.8] 时 best=1，最高分对应 labels[1]，无需预设标签顺序。
+    best = max(range(len(scores)), key=scores.__getitem__)
+    return Prediction(filename=filename, model=MODEL, emotion=labels[best],
+                      score=scores[best], labels=labels, scores=scores)
+
+
 def convert_and_predict(state, source, destination, filename):
     """Normalize media before inference so every format follows the same path.
     state 是 app.state，保存共享模型、工具路径和锁；filename 是展示用文件名。
@@ -163,30 +192,7 @@ def convert_and_predict(state, source, destination, filename):
             raise HTTPException(422, f"Audio exceeds {MAX_SECONDS} seconds")
         if duration < MIN_SECONDS:
             raise HTTPException(422, f"Audio must be at least {MIN_SECONDS} seconds")
-        # Passing decoded samples avoids torchaudio/torchcodec file-decoder dependencies.
-        # 传入已解码样本，避免依赖 torchaudio/torchcodec 的文件解码器。
-        # The thread lock prevents simultaneous calls into the shared model.
-        # 锁使同一进程内一次只有一个线程进入此模型调用；output 保存模型返回的结果列表。
-        with state.lock:
-            output = state.model.generate(input=samples, fs=16000,
-                                          granularity="utterance", extract_embedding=False)
-        # Validate the model contract before exposing scores as JSON.
-        # 单文件应只有一个结果；取其中的 labels/scores，并检查九类、数值有效且在 0 到 1 之间。
-        if not isinstance(output, list) or len(output) != 1:
-            raise ValueError("Expected one model result")
-        labels = list(output[0]["labels"])
-        scores = [float(s) for s in output[0]["scores"]]
-        if (len(labels) != 9 or len(scores) != len(labels)
-                or not all(isinstance(label, str) for label in labels)
-                or not all(math.isfinite(s) and 0 <= s <= 1 for s in scores)):
-            raise ValueError("Invalid nine-class model output")
-        # Expose English labels in the same order as the unchanged scores.
-        labels = [english_label(label) for label in labels]
-        # Use the returned label order rather than assuming a fixed class mapping.
-        # 例如 scores=[0.2, 0.8] 时 best=1，最高分对应 labels[1]，无需预设标签顺序。
-        best = max(range(len(scores)), key=scores.__getitem__)
-        return Prediction(filename=filename, model=MODEL, emotion=labels[best],
-                          score=scores[best], labels=labels, scores=scores)
+        return predict_samples(state, samples, filename)
     except subprocess.TimeoutExpired:
         raise HTTPException(422, "Media processing timed out")
     except HTTPException:
@@ -194,6 +200,63 @@ def convert_and_predict(state, source, destination, filename):
     except Exception:
         log.exception("Prediction failed")
         raise HTTPException(500, "Prediction failed; see server log")
+
+
+@contextmanager
+def extract_audio_segment(state, source, start, end):
+    """Yield a temporary mono/16 kHz/PCM16 WAV for [start, end) seconds.
+
+    Times are relative to the first decoded audio sample, not video/container
+    timestamps. Boundaries round up to the next 16 kHz sample. Each segment
+    must be 0.25-30 seconds; the source has no upload-size or duration limit.
+    The yielded path is valid only inside the context. All exits remove it.
+    """
+    try:
+        valid = (all(not isinstance(t, bool) and isinstance(t, Real)
+                     and math.isfinite(t) for t in (start, end))
+                 and start >= 0 and end > start)
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise HTTPException(422, "Timestamps must be finite numbers with 0 <= start < end")
+    duration = end - start
+    if not MIN_SECONDS <= duration <= MAX_SECONDS:
+        raise HTTPException(422, f"Segment must be {MIN_SECONDS}-{MAX_SECONDS} seconds")
+    first, last = math.ceil(start * 16000), math.ceil(end * 16000)
+    TEMP_ROOT.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="ser-segment-", dir=TEMP_ROOT) as directory:
+        destination = Path(directory) / "segment.wav"
+        try:
+            # Decode from the beginning for accurate boundaries even in compressed
+            # media. Count actual samples instead of trusting container duration.
+            result = subprocess.run(
+                [state.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-y",
+                 "-protocol_whitelist", "file,pipe", "-i", str(source),
+                 "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
+                 "-af", f"aresample=16000,atrim=start_sample={first}:end_sample={last},asetpts=PTS-STARTPTS",
+                 "-c:a", "pcm_s16le", str(destination)],
+                capture_output=True, timeout=45)
+            if result.returncode:
+                raise HTTPException(422, "Audio decoding failed or file contains no audio track")
+            with wave.open(str(destination), "rb") as wav:
+                if wav.getnframes() != last - first:
+                    raise HTTPException(422, "Segment is outside the available audio")
+        except subprocess.TimeoutExpired:
+            raise HTTPException(422, "Media processing timed out")
+        yield destination
+
+
+def predict_segment(state, source, start, end, filename=None):
+    """Extract and classify one segment using the already-loaded app state.
+
+    Blocking: async callers should use run_in_threadpool. No HTTP call, model
+    loading, or XML parsing occurs here. Temporary files also clean up when
+    inference fails.
+    """
+    with extract_audio_segment(state, source, start, end) as segment:
+        with wave.open(str(segment), "rb") as wav:
+            samples = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2").astype(np.float32) / 32768
+        return predict_samples(state, samples, filename if filename is not None else Path(source).name)
 
 
 @app.get("/health")

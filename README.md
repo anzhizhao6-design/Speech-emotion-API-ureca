@@ -112,3 +112,55 @@ Successful responses passed checks for nine corresponding labels/scores, score s
 - [Chinese learning notes](docs/LEARNING.zh-CN.md)
 
 The XML segment endpoint `/predict_multi` is planned and is not implemented in this snapshot. Real XML/media samples are pending.
+
+## Reusable segment processing (XML integration pending)
+
+`predict_segment(state, source, start, end, filename=None)` accepts a local
+media path and numeric start/end times in seconds and returns a `Prediction`
+with English labels and aligned scores. Pass the initialized `app.state` to
+reuse the loaded model and inference lock. It makes no internal HTTP requests.
+Async callers should run it through `run_in_threadpool`.
+
+For extraction alone, use the context manager:
+
+```python
+with extract_audio_segment(app.state, media_path, start=12.5, end=15.0) as wav_path:
+    # wav_path is mono, 16 kHz, PCM16 WAV; consume it inside this block.
+    ...
+```
+
+Timestamps must be finite real numbers (excluding booleans), with
+`0 <= start < end`. Intervals are `[start, end)`, relative to the first decoded
+sample of the first audio track. Boundaries round up to the next 16 kHz sample
+(less than 62.5 microseconds). The decoded frame count must match the requested
+interval; partial clips and intervals beyond the available audio raise HTTP 422.
+No silence is padded to satisfy a requested end time.
+
+Each segment retains the existing 0.25-30 second inference limit. Source media
+may exceed 30 seconds and is not subject to `/predict`'s upload-size limits.
+Extraction decodes from the beginning for accurate compressed-media boundaries,
+with a 45-second FFmpeg timeout; long sources or late segments may time out.
+Temporary segment files are removed after success, decoding failure, model
+failure, or an exception in the caller's context. Forced process termination
+can still leave files. Model/output errors propagate to the caller for future
+endpoint error handling. Existing `/predict` behavior and limits are unchanged.
+
+Run the focused checks without starting the API or loading a model:
+
+```powershell
+conda activate emotion2vec
+python -m unittest -v test_segments
+```
+
+These tests use generated WAV/MP4 media for extraction and a fake model for
+inference wiring, lock use, English-label alignment, and failure cleanup. They
+also check existing upload duration rejection. They do not validate real-model
+inference or emotion accuracy; `verify_api.py` remains the separate real-speech
+HTTP check.
+
+The future `/predict_multi` endpoint can parse transcript timestamps, call
+`predict_segment` for each speech segment, then write its returned emotion into
+the XML. XML parsing, `Speechsegment` attribute updates, and the endpoint are
+**not implemented**. Integration awaits the supervisor's real XML/media samples
+to establish element names/namespaces, timestamp units and time origin, audio
+track selection, handling of short/long segments, and per-segment failure policy.
