@@ -125,3 +125,7 @@ curl.exe -X POST 'http://127.0.0.1:8000/predict' -F 'file=@C:\Users\<username>\D
 ## 仓库整理说明
 
 历史 HTTP 测试结果位于 `reports/http-functional-results.json`，说明见 `reports/functional-verification.md`。测试脚本的新结果仍写入 `test-artifacts/results.json`。旧实验脚本、压缩包、音视频、缓存和日志未纳入此仓库。通用启动命令以英文 README 为准，本文中的 `<username>` 需按本机环境替换。`/predict_multi` 尚未实现。
+
+## 英文标签输出
+
+当前 API 的 `labels` 和 `emotion` 均只返回英文，例如 `吃惊/surprised` 转为 `surprised`。标签顺序和分数不变，特殊标签 `<unk>` 保留。`reports/` 中历史结果保留当时实际返回的中英标签，不能当作此修改后的新测试结果。

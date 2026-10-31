@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md)
 
-A Windows CPU service built with FastAPI and Uvicorn, using the fine-tuned `iic/emotion2vec_plus_seed` model through FunASR. Each request accepts one WAV, MP3, MP4, or M4A file and returns the model's native nine-class scores. The API does not use IEMOCAP or train a model.
+A Windows CPU service built with FastAPI and Uvicorn, using the fine-tuned `iic/emotion2vec_plus_seed` model through FunASR. Each request accepts one WAV, MP3, MP4, or M4A file and returns English labels with the model's native nine-class scores. The API does not use IEMOCAP or train a model.
 
 ## Project files
 
@@ -56,7 +56,8 @@ curl.exe -X POST http://127.0.0.1:8000/predict -F "file=@test-artifacts/speech.w
 | `emotion`, `score` | Label and score at the maximum-scoring position. |
 | `labels`, `scores` | All nine labels and corresponding scores, in the actual model output order. |
 
-Labels are neither reordered nor renamed. Recorded output labels: `生气/angry`, `厌恶/disgusted`, `恐惧/fearful`, `开心/happy`, `中立/neutral`, `其他/other`, `难过/sad`, `吃惊/surprised`, `<unk>`. Scores are model softmax outputs, not measured accuracy or calibrated guarantees.
+Labels retain the model output order. Bilingual labels such as `吃惊/surprised` are returned as `surprised` in both `labels` and `emotion`. The nine API labels are `angry`, `disgusted`, `fearful`, `happy`, `neutral`, `other`, `sad`, `surprised`, and `<unk>`. Scores are unchanged model softmax outputs, not measured accuracy or calibrated guarantees. Historical results in `reports/` retain the original bilingual responses.
+
 
 ## Limits and errors
 

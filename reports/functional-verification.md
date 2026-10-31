@@ -29,3 +29,7 @@ python verify_api.py "path/to/real-speech.wav"
 ```
 
 The script writes generated media and a new `test-artifacts/results.json`. It does not overwrite the historical report committed here.
+
+## English-label update
+
+The API now removes bilingual prefixes from labels and emotion, preserving score order and values. The historical responses above predate this change. The HTTP verifier now requires the nine English labels. Label conversion was checked locally against all eight saved successful responses, including maximum-label alignment. No new HTTP/model run was performed for this update.

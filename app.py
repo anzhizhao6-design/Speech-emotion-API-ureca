@@ -33,6 +33,16 @@ TEMP_ROOT = Path(__file__).parent / ".tmp"
 log = logging.getLogger("ser")
 
 
+def english_label(label: str) -> str:
+    """Remove the language prefix while preserving the model's class names."""
+    value = label.rsplit("/", 1)[-1].strip()
+    allowed = {"angry", "disgusted", "fearful", "happy", "neutral",
+               "other", "sad", "surprised", "<unk>"}
+    if value not in allowed:
+        raise ValueError(f"Unexpected emotion label: {label!r}")
+    return value
+
+
 def executable(name):
     """Find a media tool in this Python environment, then try PATH.
     返回 ffmpeg 或 ffprobe 的程序路径，优先使用当前 Python 环境中的版本。
@@ -170,6 +180,8 @@ def convert_and_predict(state, source, destination, filename):
                 or not all(isinstance(label, str) for label in labels)
                 or not all(math.isfinite(s) and 0 <= s <= 1 for s in scores)):
             raise ValueError("Invalid nine-class model output")
+        # Expose English labels in the same order as the unchanged scores.
+        labels = [english_label(label) for label in labels]
         # Use the returned label order rather than assuming a fixed class mapping.
         # 例如 scores=[0.2, 0.8] 时 best=1，最高分对应 labels[1]，无需预设标签顺序。
         best = max(range(len(scores)), key=scores.__getitem__)

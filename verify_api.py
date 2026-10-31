@@ -63,6 +63,9 @@ def main():
                 # Check label/score alignment, not a ground-truth emotion label.
                 # 例如分数最高位置是 2，就检查 emotion 是否等于 labels[2]，不与人工情绪答案比较。
                 assert len(data["labels"]) == len(data["scores"]) == 9
+                assert set(data["labels"]) == {
+                    "angry", "disgusted", "fearful", "happy", "neutral",
+                    "other", "sad", "surprised", "<unk>"}
                 best = max(range(9), key=data["scores"].__getitem__)
                 assert data["emotion"] == data["labels"][best]
                 assert data["score"] == data["scores"][best]
