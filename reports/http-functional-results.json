@@ -1,0 +1,328 @@
+[
+  {
+    "case": "wav",
+    "status": 200,
+    "response": {
+      "filename": "speech.wav",
+      "model": "iic/emotion2vec_plus_seed",
+      "emotion": "生气/angry",
+      "score": 0.9999990463256836,
+      "labels": [
+        "生气/angry",
+        "厌恶/disgusted",
+        "恐惧/fearful",
+        "开心/happy",
+        "中立/neutral",
+        "其他/other",
+        "难过/sad",
+        "吃惊/surprised",
+        "<unk>"
+      ],
+      "scores": [
+        0.9999990463256836,
+        4.057663431922265e-07,
+        1.7249313088996132e-07,
+        9.338884865428554e-08,
+        4.756825333629422e-08,
+        5.315230033886564e-09,
+        1.1848610625975198e-07,
+        2.3536016158232087e-07,
+        3.081326305220955e-10
+      ]
+    }
+  },
+  {
+    "case": "mp3",
+    "status": 200,
+    "response": {
+      "filename": "speech.mp3",
+      "model": "iic/emotion2vec_plus_seed",
+      "emotion": "生气/angry",
+      "score": 0.9999970197677612,
+      "labels": [
+        "生气/angry",
+        "厌恶/disgusted",
+        "恐惧/fearful",
+        "开心/happy",
+        "中立/neutral",
+        "其他/other",
+        "难过/sad",
+        "吃惊/surprised",
+        "<unk>"
+      ],
+      "scores": [
+        0.9999970197677612,
+        1.060317799783661e-06,
+        7.602417895213875e-07,
+        2.4171646373361e-07,
+        1.0689106488825928e-07,
+        1.2113262393143032e-08,
+        2.6460156732355244e-07,
+        6.331670192594174e-07,
+        6.899161242301943e-10
+      ]
+    }
+  },
+  {
+    "case": "mp4",
+    "status": 200,
+    "response": {
+      "filename": "speech.mp4",
+      "model": "iic/emotion2vec_plus_seed",
+      "emotion": "生气/angry",
+      "score": 0.9999988079071045,
+      "labels": [
+        "生气/angry",
+        "厌恶/disgusted",
+        "恐惧/fearful",
+        "开心/happy",
+        "中立/neutral",
+        "其他/other",
+        "难过/sad",
+        "吃惊/surprised",
+        "<unk>"
+      ],
+      "scores": [
+        0.9999988079071045,
+        4.542061731171998e-07,
+        1.9681770879742544e-07,
+        1.0449361553810377e-07,
+        5.293560079167037e-08,
+        5.924207790997116e-09,
+        1.3516522301415534e-07,
+        2.59846956396359e-07,
+        3.467587605943123e-10
+      ]
+    }
+  },
+  {
+    "case": "m4a",
+    "status": 200,
+    "response": {
+      "filename": "speech.m4a",
+      "model": "iic/emotion2vec_plus_seed",
+      "emotion": "生气/angry",
+      "score": 0.9999988079071045,
+      "labels": [
+        "生气/angry",
+        "厌恶/disgusted",
+        "恐惧/fearful",
+        "开心/happy",
+        "中立/neutral",
+        "其他/other",
+        "难过/sad",
+        "吃惊/surprised",
+        "<unk>"
+      ],
+      "scores": [
+        0.9999988079071045,
+        4.542061731171998e-07,
+        1.9681770879742544e-07,
+        1.0449361553810377e-07,
+        5.293560079167037e-08,
+        5.924207790997116e-09,
+        1.3516522301415534e-07,
+        2.59846956396359e-07,
+        3.467587605943123e-10
+      ]
+    }
+  },
+  {
+    "case": "damaged",
+    "status": 422,
+    "response": {
+      "detail": "Invalid or damaged media file"
+    }
+  },
+  {
+    "case": "damaged_m4a",
+    "status": 422,
+    "response": {
+      "detail": "Invalid or damaged media file"
+    }
+  },
+  {
+    "case": "uppercase_m4a",
+    "status": 200,
+    "response": {
+      "filename": "speech.M4A",
+      "model": "iic/emotion2vec_plus_seed",
+      "emotion": "生气/angry",
+      "score": 0.9999988079071045,
+      "labels": [
+        "生气/angry",
+        "厌恶/disgusted",
+        "恐惧/fearful",
+        "开心/happy",
+        "中立/neutral",
+        "其他/other",
+        "难过/sad",
+        "吃惊/surprised",
+        "<unk>"
+      ],
+      "scores": [
+        0.9999988079071045,
+        4.542061731171998e-07,
+        1.9681770879742544e-07,
+        1.0449361553810377e-07,
+        5.293560079167037e-08,
+        5.924207790997116e-09,
+        1.3516522301415534e-07,
+        2.59846956396359e-07,
+        3.467587605943123e-10
+      ]
+    }
+  },
+  {
+    "case": "no_audio",
+    "status": 422,
+    "response": {
+      "detail": "File contains no audio track"
+    }
+  },
+  {
+    "case": "empty",
+    "status": 422,
+    "response": {
+      "detail": "Empty file"
+    }
+  },
+  {
+    "case": "unsupported",
+    "status": 415,
+    "response": {
+      "detail": "Supported file extensions: WAV, MP3, MP4, M4A"
+    }
+  },
+  {
+    "case": "multiple",
+    "status": 400,
+    "response": {
+      "detail": "Too many files. Maximum number of files is 1."
+    }
+  },
+  {
+    "case": "file_limit",
+    "status": 413,
+    "response": {
+      "detail": "File exceeds 25 MiB"
+    }
+  },
+  {
+    "case": "body_limit",
+    "status": 413,
+    "response": {
+      "detail": "Request body exceeds 26 MiB"
+    }
+  },
+  {
+    "case": "too_short",
+    "status": 422,
+    "response": {
+      "detail": "Audio must be at least 0.25 seconds"
+    }
+  },
+  {
+    "case": "too_long",
+    "status": 422,
+    "response": {
+      "detail": "Audio exceeds 30 seconds"
+    }
+  },
+  {
+    "case": "consecutive_1",
+    "status": 200,
+    "response": {
+      "filename": "speech.wav",
+      "model": "iic/emotion2vec_plus_seed",
+      "emotion": "生气/angry",
+      "score": 0.9999990463256836,
+      "labels": [
+        "生气/angry",
+        "厌恶/disgusted",
+        "恐惧/fearful",
+        "开心/happy",
+        "中立/neutral",
+        "其他/other",
+        "难过/sad",
+        "吃惊/surprised",
+        "<unk>"
+      ],
+      "scores": [
+        0.9999990463256836,
+        4.057663431922265e-07,
+        1.7249313088996132e-07,
+        9.338884865428554e-08,
+        4.756825333629422e-08,
+        5.315230033886564e-09,
+        1.1848610625975198e-07,
+        2.3536016158232087e-07,
+        3.081326305220955e-10
+      ]
+    }
+  },
+  {
+    "case": "consecutive_2",
+    "status": 200,
+    "response": {
+      "filename": "speech.wav",
+      "model": "iic/emotion2vec_plus_seed",
+      "emotion": "生气/angry",
+      "score": 0.9999990463256836,
+      "labels": [
+        "生气/angry",
+        "厌恶/disgusted",
+        "恐惧/fearful",
+        "开心/happy",
+        "中立/neutral",
+        "其他/other",
+        "难过/sad",
+        "吃惊/surprised",
+        "<unk>"
+      ],
+      "scores": [
+        0.9999990463256836,
+        4.057663431922265e-07,
+        1.7249313088996132e-07,
+        9.338884865428554e-08,
+        4.756825333629422e-08,
+        5.315230033886564e-09,
+        1.1848610625975198e-07,
+        2.3536016158232087e-07,
+        3.081326305220955e-10
+      ]
+    }
+  },
+  {
+    "case": "consecutive_3",
+    "status": 200,
+    "response": {
+      "filename": "speech.wav",
+      "model": "iic/emotion2vec_plus_seed",
+      "emotion": "生气/angry",
+      "score": 0.9999990463256836,
+      "labels": [
+        "生气/angry",
+        "厌恶/disgusted",
+        "恐惧/fearful",
+        "开心/happy",
+        "中立/neutral",
+        "其他/other",
+        "难过/sad",
+        "吃惊/surprised",
+        "<unk>"
+      ],
+      "scores": [
+        0.9999990463256836,
+        4.057663431922265e-07,
+        1.7249313088996132e-07,
+        9.338884865428554e-08,
+        4.756825333629422e-08,
+        5.315230033886564e-09,
+        1.1848610625975198e-07,
+        2.3536016158232087e-07,
+        3.081326305220955e-10
+      ]
+    }
+  }
+]
