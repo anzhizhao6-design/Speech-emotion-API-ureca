@@ -2,17 +2,24 @@
 
 [English](README.md)
 
-本项目是 Windows CPU 服务，使用 FastAPI、Uvicorn，通过 FunASR 调用已微调的 `iic/emotion2vec_plus_seed` 模型。每次接收一个 WAV、MP3、MP4 或 M4A 文件，返回模型原生九分类分数。API 不使用 IEMOCAP，也不训练模型。
+本项目是 Windows CPU 服务，使用 FastAPI、Uvicorn，通过 FunASR 调用已微调的 `iic/emotion2vec_plus_seed` 模型。`/predict` 接收一个 WAV、MP3、MP4 或 M4A 文件，返回英文标签和模型原生九分类分数；`/predict_multi` 接收媒体与 XML 转录，返回写入各语音段英文 emotion 的 XML。API 不使用 IEMOCAP，也不训练模型。
+
+## 学习文档：按 01、02 顺序阅读
+
+1. [01：单文件 API 基础学习](docs/01-single-file-api-learning.zh-CN.md)：保留最初的 Python、HTTP 上传和 `/predict` 学习记录，并标注当前代码已抽取或变化的部分。
+2. [02：分段与 XML API 学习](docs/02-segment-xml-api-learning.zh-CN.md)：按一次真实请求讲解当前 `/predict_multi` 的校验、一次解码、采样定位、共享模型、XML 更新与清理，附函数职责表和读代码顺序。
 
 ## 项目文件
 
 | 文件 | 职责 |
 | --- | --- |
-| `app.py` | 启动时加载模型，检查上传文件，转换媒体，串行 CPU 推理，返回 JSON，并清理临时文件。 |
+| `app.py` | 启动时加载共享模型，检查上传文件，转换媒体，串行 CPU 推理，返回 JSON 或更新后的 XML，并清理临时文件。 |
 | `verify_api.py` | 通过真实 HTTP 请求测试已启动的服务。将指定语音转为测试格式，检查响应并保存结果。它不启动服务，也不测量识别准确率。 |
+| `test_segments.py` | 使用生成媒体及假模型，验证单段提取、格式、边界、标签对齐和清理。 |
+| `test_predict_multi.py` | 使用生成媒体及假模型，验证 XML 端点、语义保留、独立限制、共享门控和清理。 |
 | `requirements.txt` | 固定版本的 API 补充依赖，不是完整环境描述。 |
 | `environment/pip-snapshot.txt` | 已记录的 pip 快照，不是可移植的 Conda 锁定文件。 |
-| `reports/http-functional-results.json` | 上次 18 个 POST 用例的响应。生成产物被 Git 忽略，新检出的项目中可能不存在。 |
+| `reports/http-functional-results.json` | 已纳入 Git 的历史 18 个 POST 用例响应，保留当时的中英标签；新的测试产物写到被忽略的 `test-artifacts/`。 |
 
 ## 环境和启动
 
@@ -55,9 +62,9 @@ Set-Location 'C:\Users\<username>\Desktop\uni\ureca\ser-api'
 
 已记录 `model.pt` SHA256：`327e861049c7105a3f8589edfd16543a7cdc0c1926f1b64de975d98e0650cdd3`。加载时出现过缺少 `AUDIO.decoder` 键的警告，随后分类请求成功。
 
-FFprobe 检查第一条音轨。FFmpeg 将它转换为单声道 16 kHz PCM16 WAV，服务再将 float32 NumPy 样本交给复用的模型。MP4 画面不参与分析。信号量让请求处理串行进行，线程锁保护推理；torch CPU 线程最多四个。推理参数为 `granularity="utterance", extract_embedding=False`。
+`/predict` 先用 FFprobe 检查第一条音轨，再用 FFmpeg 转为单声道 16 kHz PCM16 WAV。`/predict_multi` 不在每次请求中调用 FFprobe，而是直接用 FFmpeg 一次性解码第一条音轨，随后按实际 WAV 采样数检查全部片段。两条流程都将 float32 NumPy 波形交给共享模型。MP4 画面不参与分析。两个预测路由共用信号量串行处理请求，线程锁保护推理；阻塞解码和推理交给线程池，torch CPU 计算线程最多四个。推理参数为 `granularity="utterance", extract_embedding=False`。
 
-## 上传与响应
+## `/predict` 上传与响应
 
 打开 <http://127.0.0.1:8000/docs> → **POST /predict** → **Try it out** → 在 `file` 中选文件 → **Execute**。上传必须恰好包含一个名为 `file` 的 multipart 文件字段，不能附加其他字段。支持 `.wav`、`.mp3`、`.mp4`、`.m4a`，不区分大小写。实际内容必须能成功解码；服务不检查是否包含语音。
 
@@ -74,9 +81,9 @@ curl.exe -X POST 'http://127.0.0.1:8000/predict' -F 'file=@C:\Users\<username>\D
 | `emotion`、`score` | 最高分位置的标签和分数。 |
 | `labels`、`scores` | 按模型实际输出顺序排列的全部九个标签和对应分数。 |
 
-标签不重新排序、不改名。已记录标签：`生气/angry`、`厌恶/disgusted`、`恐惧/fearful`、`开心/happy`、`中立/neutral`、`其他/other`、`难过/sad`、`吃惊/surprised`、`<unk>`。分数是模型 softmax 输出，不是测得的准确率，也不是经过校准的正确性保证。
+当前标签保持模型顺序，去掉语言前缀，只返回 `angry`、`disgusted`、`fearful`、`happy`、`neutral`、`other`、`sad`、`surprised`、`<unk>` 九个英文类别。分数不因标签转换而改变。历史报告中的 `生气/angry` 等是旧响应，不能当作当前返回格式。分数是模型 softmax 输出，不是测得的准确率，也不是经过校准的正确性保证。
 
-## 限制与错误
+## `/predict` 限制与错误
 
 | 限制 | 实际实现 |
 | --- | --- |
@@ -108,7 +115,7 @@ curl.exe -X POST 'http://127.0.0.1:8000/predict' -F 'file=@C:\Users\<username>\D
 & 'C:\Users\<username>\miniconda3\envs\emotion2vec\python.exe' verify_api.py 'C:\Users\<username>\.cache\modelscope\models\iic--emotion2vec_plus_seed\snapshots\master\example\test.wav'
 ```
 
-可以替换为其他真实语音路径。`--url` 可覆盖 `http://127.0.0.1:8000`。客户端覆盖生成的媒体文件，并在成功运行后写入 `reports/http-functional-results.json`。
+可以替换为其他真实语音路径。`--url` 可覆盖 `http://127.0.0.1:8000`。客户端覆盖 `test-artifacts/` 下生成的媒体文件，并在全部检查通过后写入 `test-artifacts/results.json`，不会自动覆盖历史 `reports/http-functional-results.json`。这个脚本只测试 `/predict`，不包含 XML 多段请求。
 
 | 已保存 POST 用例（共 18 项） | 状态码 |
 | --- | --- |
@@ -124,8 +131,65 @@ curl.exe -X POST 'http://127.0.0.1:8000/predict' -F 'file=@C:\Users\<username>\D
 
 ## 仓库整理说明
 
-历史 HTTP 测试结果位于 `reports/http-functional-results.json`，说明见 `reports/functional-verification.md`。测试脚本的新结果仍写入 `test-artifacts/results.json`。旧实验脚本、压缩包、音视频、缓存和日志未纳入此仓库。通用启动命令以英文 README 为准，本文中的 `<username>` 需按本机环境替换。`/predict_multi` 尚未实现。
+历史 HTTP 测试结果位于 [历史响应](reports/http-functional-results.json)，说明见 [功能验证记录](reports/functional-verification.md)。测试脚本的新结果写入 `test-artifacts/results.json`。旧实验脚本、压缩包、音视频、缓存和日志未纳入此仓库。本文中的 `<username>` 需按本机环境替换；旧路径中的 `ser-api` 也应替换为实际仓库目录。`/predict_multi` 已实现，使用方式如下。
 
 ## 英文标签输出
 
 当前 API 的 `labels` 和 `emotion` 均只返回英文，例如 `吃惊/surprised` 转为 `surprised`。标签顺序和分数不变，特殊标签 `<unk>` 保留。`reports/` 中历史结果保留当时实际返回的中英标签，不能当作此修改后的新测试结果。
+
+## `POST /predict_multi`：媒体＋XML 分段预测
+
+请求必须恰好有两个 multipart **文件字段**：
+
+| 字段 | 内容 |
+| --- | --- |
+| `file` | 一份 WAV、MP3、MP4 或 M4A 媒体，扩展名不区分大小写 |
+| `xml` | 一份 XML 转录，按实际内容解析，不能是普通文本字段 |
+
+重复字段、多余字段、缺失字段或普通文本字段会被拒绝。先启动服务，可在 `/docs` 选择两个文件；或在仓库根目录执行以下示例（先准备 `test-artifacts/` 输出目录）：
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/predict_multi -F "file=@samples/news-video-with-captions 2.mp4" -F "xml=@samples/news-video-with-captions 1.xml" --output test-artifacts/predicted-transcript.xml
+```
+
+输入样本不会被覆盖。成功响应为 UTF-8 `application/xml`，附带下载文件名 `predicted-transcript.xml`。
+
+支持的结构是无命名空间的 `AudioDoc` 根元素，恰好一个直接子元素 `SegmentList`，其下有 1–1000 个直接 `SpeechSegment`。`stime` 是开始秒数，`dur` 是持续秒数，结束位置为 `stime + dur`。代码用十进制时间计算、向上取整为 16 kHz 采样索引。时间相对于第一条音轨的首个解码采样；XML 元素不必按时间排序，也不会被重新排序。
+
+服务先检查所有时间字段，再把第一条音轨**解码一次**到单声道、16 kHz、PCM16 WAV。根据实际采样总数验证全部片段后，逐段定位读取，复用 `predict_samples()`、已加载模型和推理锁。立体声会混成单声道，XML `channel="1"` 仅作为元数据保留，不表示选择左声道。
+
+每段都重新预测并新增或覆盖 `emotion`。原有 emotion 不是已验证的真实标签；所有其他属性（包括原 `score`）、元素顺序、文本、Word、图像/声音描述保留语义内容。根内注释、处理指令也保留。格式、引号、XML 声明和等价转义可以改变；`<unk>` 会安全写为 `emotion="&lt;unk&gt;"`。没有自定义字节偏移重写。
+
+解析会拒绝 DTD、实体声明和外部实体解析，不读取外部资源；XML 嵌套超过 128 层拒绝。全部片段成功后才返回 XML，任意片段失败都返回 JSON 错误，不返回部分结果，不静默截短或补静音。错误中的片段编号是原 XML 顺序下的 **1 起始编号**。
+
+| 新端点限制 | 数值 |
+| --- | --- |
+| 媒体文件 | 128 MiB |
+| XML 文件 | 2 MiB |
+| 包含 multipart 开销的请求体 | 131 MiB，按实际接收字节计数 |
+| 完整解码音频 | 最多 30 分钟 |
+| 每段时长 | 0.25–30 秒，包含边界 |
+| 语音段数量 | 1–1000 |
+| FFmpeg 解码超时 | 120 秒 |
+| 解码时长/输出上限 | 1801 秒 / 57,697,536 字节，多一秒用于检测超长 |
+| 返回 XML 大小 | 16 MiB |
+| XML 嵌套深度 | 128 层 |
+
+媒体头里的时长不能证明文件完整，仍需检查真实解码采样。原 `/predict` 的 25 MiB 文件、26 MiB 请求体和 0.25–30 秒音频限制保持不变。这里的 120 秒只限制解码，不限制全部推理、gate 等待或整个请求。
+
+multipart 解析错误返回 400，上传超限 413，不支持的媒体后缀 415，XML/时间/数量/范围或解码/输出限制错误 422，模型或内部错误 500。临时目录 `.tmp/ser-multi-*` 在成功和异常后清理；强制结束进程可能留下文件。两个预测接口共用请求 gate。
+
+## 分段测试与完整样本验证
+
+无需启动服务或加载真实模型的生成媒体/假模型测试：
+
+```powershell
+conda activate emotion2vec
+python -m unittest -v test_segments test_predict_multi
+```
+
+已保存记录中，10 项单段测试和 16 项 XML 端点测试均通过，原 `/predict` 的 18 个 HTTP 用例也通过。完整真实视频的 `/predict_multi` 请求返回 **HTTP 200**，65 段全部获得有效英文 emotion；耗时 **43.373 秒，不含模型启动**，一次解码、同一模型复用、其他 XML 内容保留及清理检查均通过。
+
+早先 55,062,440 字节的视频下载不完整，实际音频约 452 秒，导致片段越界；重新下载为 71,215,895 字节、完整音频约 570.259 秒后，在**不放宽校验**的情况下通过。历史失败和新成功均见 [XML 端点验证报告](reports/predict-multi-verification-2026-11-02.md)。返回 XML 和日志保存在被忽略的 `test-artifacts/`，不随 Git 分发。
+
+上述结果验证功能，不代表情绪分类准确率；尚无独立人工标注集、准确率/F1、校准或系统性能基准。当前学习文档整理没有重新运行模型或测试。

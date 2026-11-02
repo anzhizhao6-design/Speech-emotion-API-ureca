@@ -8,8 +8,10 @@ A Windows CPU service built with FastAPI and Uvicorn, using the fine-tuned `iic/
 
 | File | Responsibility |
 | --- | --- |
-| `app.py` | Loads the model at startup; validates uploads; converts media; runs serialized CPU inference; returns JSON; cleans up temporary files. |
+| `app.py` | Loads the shared model; validates uploads; converts media; runs serialized CPU inference; returns JSON or updated XML; cleans up temporary files. |
 | `verify_api.py` | Tests an already running service through real HTTP requests. Converts a supplied speech recording into test formats, checks responses, and saves results. It neither starts the service nor measures recognition accuracy. |
+| `test_segments.py` | Generated-media and fake-model checks for reusable single-segment extraction and inference. |
+| `test_predict_multi.py` | Generated-media and fake-model checks for the XML endpoint, preservation, limits, shared gate, and cleanup. |
 | `requirements.txt` | Pinned API additions, not a complete environment specification. |
 | `environment/pip-snapshot.txt` | Recorded pip snapshot, not a portable Conda lockfile. |
 | `reports/http-functional-results.json` | Saved responses from the previous 18-case POST run. The historical JSON report is committed; generated media remain Git-ignored. |
@@ -37,7 +39,7 @@ The model loads once per process at startup with `hub="ms"`, `device="cpu"`, and
 
 Recorded `model.pt` SHA256: `327e861049c7105a3f8589edfd16543a7cdc0c1926f1b64de975d98e0650cdd3`. Loading emitted missing `AUDIO.decoder` key warnings; subsequent classification requests succeeded.
 
-FFprobe checks the first audio track. FFmpeg converts it to mono 16 kHz PCM16 WAV, then the service passes float32 NumPy samples to the reused model. MP4 video is not analyzed. A semaphore serializes request processing and a lock protects inference; torch uses at most four CPU threads. Inference uses `granularity="utterance", extract_embedding=False`.
+For `/predict`, FFprobe checks the first audio track. FFmpeg converts it to mono 16 kHz PCM16 WAV, then the service passes float32 NumPy samples to the reused model. `/predict_multi` directly decodes the first audio track once with FFmpeg and checks the actual WAV sample count before predicting any segment; it does not run FFprobe for each request. MP4 video is not analyzed. A shared semaphore serializes prediction request processing and a lock protects inference; torch uses at most four CPU threads. Inference uses `granularity="utterance", extract_embedding=False`.
 
 ## Upload and response
 
@@ -105,11 +107,16 @@ Successful responses passed checks for nine corresponding labels/scores, score s
 
 **These verify interface behavior and actual model inference, not emotion recognition accuracy.** No independently labeled test set, accuracy metric, or calibration study has been evaluated. A high score on one sample does not establish correctness or generalization. This documentation-only update is based on source inspection and saved results, not a new service test run.
 
-## Documentation and next work
+## Documentation and learning guides
 
 - [Functional verification report](reports/functional-verification.md)
 - [Recorded HTTP responses](reports/http-functional-results.json)
-- [Chinese learning notes](docs/LEARNING.zh-CN.md)
+- [XML endpoint verification report](reports/predict-multi-verification-2026-11-02.md)
+
+Read the Chinese learning guides in this order:
+
+1. [01 — Single-file API foundations](docs/01-single-file-api-learning.zh-CN.md): preserves the original beginner notes on Python, HTTP uploads, and `/predict`, with annotations for code that has since moved or changed.
+2. [02 — Segment and XML API walkthrough](docs/02-segment-xml-api-learning.zh-CN.md): follows one current `/predict_multi` request through validation, one-time decoding, sample offsets, shared inference, XML updates, cleanup, and verification; includes a function map and suggested code-reading order.
 
 The XML segment endpoint `/predict_multi` supports the supplied AudioDoc transcript structure; see the endpoint details below. Supervisor samples remain Git-ignored.
 

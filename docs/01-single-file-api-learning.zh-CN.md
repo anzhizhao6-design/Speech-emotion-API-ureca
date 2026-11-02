@@ -1,8 +1,12 @@
 # 跟着一条录音读懂本地 SER API
 
+> **01：单文件 API 基础学习记录。** 本文保留早期教程，主要学习 `/predict`、Python 语法和 HTTP 请求，不是当前 `app.py` 的逐行镜像。当前代码已经提取共享推理函数，并新增 XML 多片段接口；请接着阅读 [02：分段与 XML API 学习](02-segment-xml-api-learning.zh-CN.md)。本次整理只修改文档，没有重跑推理。
+
+当前阅读时先记住三处变化：`convert_and_predict()` 把波形交给 `predict_samples()`，后者负责模型调用、英文标签转换和结果校验；请求体中间件按路径选择上限；`/predict_multi` 使用一次完整解码，而不是循环调用单段提取函数。下文相应位置另有说明，原有基础讲解继续保留。
+
 假设你在 Windows 录下一段 `我的录音.m4a`，希望上传后得到情绪标签。我们就沿着这条录音的处理过程读代码。
 
-本教程依据当前 `app.py` 和 `verify_api.py`。下面的源码片段保留完整操作，部分省略外围缩进和注释，不能当作独立程序逐块运行。明确写着“教学例子”的内容只是帮助理解，不是项目增加的功能。
+本教程依据单文件 API 阶段的 `app.py` 和 `verify_api.py` 编写。下面的片段部分省略外围缩进和注释，不能当作独立程序逐块运行；与当前源码位置不同之处以更新说明为准。明确写着“教学例子”的内容只是帮助理解，不是项目增加的功能。当前源码见 [app.py](../app.py) 和 [verify_api.py](../verify_api.py)。
 
 ## 一、先知道谁在做事
 
@@ -288,6 +292,8 @@ async def predict(request: Request):
 
 ## 六、模型预测：现在才开始计算情绪
 
+> **当前实现说明：** 本节及第七节中的模型调用、输出校验、取最大值、组装 `Prediction`，现在位于 `predict_samples(state, samples, filename)` 中。`convert_and_predict()` 校验音频后执行 `return predict_samples(state, samples, filename)`。这让单文件、单段和 XML 多段流程共用同一套逻辑，详见 [02 学习文档](02-segment-xml-api-learning.zh-CN.md)。
+
 ### 1. 把波形交给已经加载的模型
 
 ```python
@@ -329,6 +335,8 @@ async def predict(request: Request):
 这一步检查标签和分数是否各有九项、标签是否都是字符串、分数是否都是有效的 0 到 1 之间的数。`all(...)` 表示里面的每项都满足才为真，`math.isfinite()` 排除无穷大等特殊数值。
 
 这只是数据检查，不是在判断模型猜得对不对。检查通过，才会选最高分标签。
+
+> **当前英文标签补充：** `predict_samples()` 在以上检查之后执行 `labels = [english_label(label) for label in labels]`，再找最大分数的位置。`english_label()` 去掉斜杠前的语言前缀并检查允许的类别，保留 `<unk>`。它不重新排列分数。下文返回的 `emotion`、`labels` 应按当前英文输出理解，不能把历史中英标签报告当作新响应。
 
 ## 七、返回结果：把 Python 数据变成浏览器能显示的内容
 
@@ -479,6 +487,8 @@ if __name__ == "__main__":
 
 ### 7. 成功时只检查数据一致性
 
+> 当前 `verify_api.py` 除下方摘录，还断言 `labels` 的集合正好是九个英文标签；这里保留基础摘录，并非完整成功响应校验代码。
+
 ```python
                 assert len(data["labels"]) == len(data["scores"]) == 9
                 best = max(range(9), key=data["scores"].__getitem__)
@@ -580,6 +590,8 @@ if __name__ == "__main__":
 
 ### 4. middleware：读取请求时多做一次总大小检查
 
+> **当前实现说明：** 下方 `if total > MAX_BODY_BYTES` 是单文件阶段的旧片段；当前源码先用 `scope["path"]` 选择 `limit`，再判断 `if total > limit`。`/predict` 仍是 26 MiB；只有 `/predict_multi` 使用 131 MiB。不要把本节的 26 MiB 推广到新接口，见 [02 学习文档](02-segment-xml-api-learning.zh-CN.md)。
+
 ```python
 app.add_middleware(BodyLimitMiddleware)
 ```
@@ -595,13 +607,15 @@ app.add_middleware(BodyLimitMiddleware)
             return message
 ```
 
-这是 `BodyLimitMiddleware` 内部 `limited_receive()` 的实际内容片段。`receive()` 读取下一块消息，`message` 是装着内容的字典；`body` 是其中的字节。`total` 记录累计大小，`nonlocal` 说明要修改外层函数已有的 `total`。
+这是单文件阶段 `BodyLimitMiddleware` 内部 `limited_receive()` 的历史片段。`receive()` 读取下一块消息，`message` 是装着内容的字典；`body` 是其中的字节。`total` 记录累计大小，`nonlocal` 说明要修改外层函数已有的 `total`。
 
 每次下游读取内容都会经过它，所以即使上传方没有预先说总大小，也按实际字节检查。超过 26 MiB 抛出 `BodyTooLarge`，外层捕获后返回 413。文件本身仍有独立的 25 MiB 检查。更底层怎样传递消息，可以等熟悉核心流程后再学。
 
 ## 十、下次如何启动、上传和停止
 
 ### 1. 在 PowerShell 启动后台程序
+
+> 本节保留当时的本机命令作为记录；其中 `ser-api` 是旧目录示例，不是当前仓库名。现在请在 `Speech-emotion-API-ureca` 根目录按 [中文 README](../README.zh-CN.md) 的通用命令启动，并使用自己的环境路径，不要照抄旧绝对路径。
 
 ```powershell
 Set-Location 'C:\Users\36043\Desktop\uni\ureca\ser-api'
