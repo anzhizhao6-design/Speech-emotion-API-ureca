@@ -3,6 +3,9 @@
 """
 import asyncio
 from contextlib import asynccontextmanager, contextmanager
+from decimal import Decimal, InvalidOperation
+import xml.etree.ElementTree as ET
+from xml.parsers import expat
 import json
 import logging
 import math
@@ -21,7 +24,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 # Configuration: bound uploads and decoded audio to keep local CPU work manageable.
 # 限制文件大小和音频时长；请求体上限还为文件名、分隔符等上传信息留出空间。
@@ -30,6 +33,14 @@ MAX_FILE_BYTES = 25 * 1024 * 1024
 MAX_BODY_BYTES = MAX_FILE_BYTES + 1024 * 1024
 MAX_SECONDS = 30
 MIN_SECONDS = 0.25
+MULTI_MEDIA_BYTES = 128 * 1024 * 1024
+MULTI_XML_BYTES = 2 * 1024 * 1024
+MULTI_BODY_BYTES = 131 * 1024 * 1024
+MULTI_SECONDS = 30 * 60
+MULTI_SEGMENTS = 1000
+MULTI_DECODE_TIMEOUT = 120
+MULTI_WAV_BYTES = (MULTI_SECONDS + 1) * 16000 * 2 + 65536
+MULTI_OUTPUT_BYTES = 16 * 1024 * 1024
 TEMP_ROOT = Path(__file__).parent / ".tmp"
 log = logging.getLogger("ser")
 
@@ -109,6 +120,7 @@ class BodyLimitMiddleware:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         total = 0
+        limit = MULTI_BODY_BYTES if scope["path"] == "/predict_multi" else MAX_BODY_BYTES
 
         async def limited_receive():
             # Count actual bytes so chunked uploads cannot bypass the limit.
@@ -116,14 +128,14 @@ class BodyLimitMiddleware:
             nonlocal total
             message = await receive()
             total += len(message.get("body", b""))
-            if total > MAX_BODY_BYTES:
+            if total > limit:
                 raise BodyTooLarge()
             return message
 
         try:
             await self.app(scope, limited_receive, send)
         except BodyTooLarge:
-            await JSONResponse({"detail": "Request body exceeds 26 MiB"}, 413)(scope, receive, send)
+            await JSONResponse({"detail": f"Request body exceeds {limit // (1024 * 1024)} MiB"}, 413)(scope, receive, send)
 
 
 app.add_middleware(BodyLimitMiddleware)
@@ -308,3 +320,163 @@ async def predict(request: Request):
                                                    source, Path(directory) / "audio.wav", filename)
         except HTTPException:
             raise
+
+
+def parse_transcript(data):
+    """Validate declarations and the actual schema before constructing a tree.
+
+    Expat callbacks reject declarations regardless of XML encoding. No external
+    resources are resolved. ElementTree preserves text/tails, comments and PIs
+    within the document element; serialization may change equivalent syntax.
+    """
+    if len(data) > MULTI_XML_BYTES:
+        raise HTTPException(413, "XML exceeds 2 MiB")
+    parser = expat.ParserCreate()
+    depth = 0
+
+    def forbidden(*args):
+        raise ValueError("DTD and entity declarations/resolution are forbidden")
+
+    def start(*args):
+        nonlocal depth
+        depth += 1
+        if depth > 128:
+            raise ValueError("XML nesting exceeds 128 levels")
+
+    def end(*args):
+        nonlocal depth
+        depth -= 1
+
+    parser.StartDoctypeDeclHandler = forbidden
+    parser.EntityDeclHandler = forbidden
+    parser.ExternalEntityRefHandler = forbidden
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    try:
+        parser.Parse(data, True)
+        root = ET.fromstring(data, parser=ET.XMLParser(
+            target=ET.TreeBuilder(insert_comments=True, insert_pis=True)))
+    except (expat.ExpatError, ET.ParseError, ValueError, LookupError) as error:
+        raise HTTPException(422, f"Invalid XML: {error}") from error
+    if root.tag != "AudioDoc" or len(root.findall("SegmentList")) != 1:
+        raise HTTPException(422, "Expected AudioDoc with exactly one SegmentList")
+    elements = root.findall("./SegmentList/SpeechSegment")
+    if not elements:
+        raise HTTPException(422, "Segment 1: no SpeechSegment found")
+    if len(elements) > MULTI_SEGMENTS:
+        raise HTTPException(422, f"Segment {MULTI_SEGMENTS + 1}: at most {MULTI_SEGMENTS} speech segments allowed")
+    expected = set(elements)
+    for index, element in enumerate(root.iter("SpeechSegment"), 1):
+        if element not in expected:
+            raise HTTPException(422, f"Segment {index}: SpeechSegment must be a direct child of AudioDoc/SegmentList")
+    segments = []
+    for index, element in enumerate(elements, 1):
+        try:
+            start = Decimal(element.attrib["stime"])
+            duration = Decimal(element.attrib["dur"])
+            if (not start.is_finite() or not duration.is_finite()
+                    or start < 0 or start > MULTI_SECONDS):
+                raise ValueError("stime must be finite and within the 30-minute audio limit")
+            if not Decimal("0.25") <= duration <= Decimal("30"):
+                raise ValueError("dur must be finite and between 0.25 and 30 seconds")
+            end = start + duration
+            first, last = math.ceil(start * 16000), math.ceil(end * 16000)
+            segments.append((element, first, last))
+        except (KeyError, InvalidOperation, ValueError, OverflowError) as error:
+            raise HTTPException(422, f"Segment {index}: invalid stime/dur ({error})") from error
+    return root, segments
+
+
+def predict_transcript(state, source, transcript, destination):
+    """Blocking worker: validate all intervals, decode once, then infer in order."""
+    try:
+        root, segments = parse_transcript(transcript)
+        decoded = subprocess.run(
+            [state.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-y",
+             "-protocol_whitelist", "file,pipe", "-i", str(source),
+             "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
+             "-t", str(MULTI_SECONDS + 1), "-fs", str(MULTI_WAV_BYTES),
+             "-c:a", "pcm_s16le", str(destination)],
+            capture_output=True, timeout=MULTI_DECODE_TIMEOUT)
+        if decoded.returncode:
+            raise HTTPException(422, "Audio decoding failed or file contains no audio track")
+        if destination.stat().st_size > MULTI_WAV_BYTES:
+            raise HTTPException(422, "Decoded audio exceeds output-size limit")
+        with wave.open(str(destination), "rb") as wav:
+            frames = wav.getnframes()
+            if (wav.getnchannels(), wav.getframerate(), wav.getsampwidth()) != (1, 16000, 2):
+                raise HTTPException(422, "Unexpected decoded audio format")
+            if frames > MULTI_SECONDS * 16000:
+                raise HTTPException(422, "Decoded audio exceeds 30 minutes")
+            # All ranges are checked before the first model call, including late
+            # invalid segments in transcripts whose elements are not time-sorted.
+            for index, (_, first, last) in enumerate(segments, 1):
+                if first >= frames or last > frames:
+                    raise HTTPException(422, f"Segment {index}: outside the available audio")
+            for index, (element, first, last) in enumerate(segments, 1):
+                wav.setpos(first)
+                pcm = wav.readframes(last - first)
+                if len(pcm) != (last - first) * 2:
+                    raise HTTPException(422, f"Segment {index}: incomplete decoded audio")
+                samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
+                try:
+                    result = predict_samples(state, samples, source.name)
+                except Exception as error:
+                    log.exception("Segment %s prediction failed", index)
+                    raise HTTPException(500, f"Segment {index}: prediction failed; see server log") from error
+                element.set("emotion", result.emotion)
+        output = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        if len(output) > MULTI_OUTPUT_BYTES:
+            raise HTTPException(422, "Updated XML exceeds 16 MiB")
+        return output
+    except subprocess.TimeoutExpired as error:
+        raise HTTPException(422, "Audio decoding timed out (120 seconds)") from error
+    except HTTPException:
+        raise
+    except Exception as error:
+        log.exception("Transcript prediction failed")
+        raise HTTPException(500, "Transcript prediction failed; see server log") from error
+
+
+async def save_multi_upload(upload, path, limit, description):
+    size = 0
+    with path.open("wb") as target:
+        while chunk := await upload.read(1024 * 1024):
+            size += len(chunk)
+            if size > limit:
+                raise HTTPException(413, f"{description} exceeds {limit // (1024 * 1024)} MiB")
+            await run_in_threadpool(target.write, chunk)
+    if not size:
+        raise HTTPException(422, f"Empty {description.lower()}")
+
+
+@app.post("/predict_multi", response_class=Response, responses={
+    200: {"description": "Transcript with predicted English emotions", "content": {
+        "application/xml": {"schema": {"type": "string"}}}}}, openapi_extra={
+    "requestBody": {"required": True, "content": {"multipart/form-data": {
+        "schema": {"type": "object", "required": ["file", "xml"], "properties": {
+            "file": {"type": "string", "format": "binary"},
+            "xml": {"type": "string", "format": "binary"}}}}}}})
+async def predict_multi(request: Request):
+    """Accept one media file and transcript; return XML only on full success."""
+    async with request.app.state.gate:
+        async with request.form(max_files=2, max_fields=0) as form:
+            entries = list(form.multi_items())
+            if (len(entries) != 2 or {key for key, _ in entries} != {"file", "xml"}
+                    or not all(isinstance(value, UploadFile) for _, value in entries)):
+                raise HTTPException(422, "Provide exactly two file fields: 'file' and 'xml'")
+            media, transcript = form["file"], form["xml"]
+            suffix = Path((media.filename or "").replace("\\", "/").split("/")[-1]).suffix.lower()
+            if suffix not in {".wav", ".mp3", ".mp4", ".m4a"}:
+                raise HTTPException(415, "Supported file extensions: WAV, MP3, MP4, M4A")
+            TEMP_ROOT.mkdir(exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="ser-multi-", dir=TEMP_ROOT) as directory:
+                source = Path(directory) / ("input" + suffix)
+                xml_path = Path(directory) / "input.xml"
+                await save_multi_upload(media, source, MULTI_MEDIA_BYTES, "Media")
+                await save_multi_upload(transcript, xml_path, MULTI_XML_BYTES, "XML")
+                data = await run_in_threadpool(xml_path.read_bytes)
+                output = await run_in_threadpool(predict_transcript, request.app.state,
+                                                source, data, Path(directory) / "audio.wav")
+            return Response(output, media_type="application/xml; charset=utf-8", headers={
+                "Content-Disposition": 'attachment; filename="predicted-transcript.xml"'})

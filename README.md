@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md)
 
-A Windows CPU service built with FastAPI and Uvicorn, using the fine-tuned `iic/emotion2vec_plus_seed` model through FunASR. Each request accepts one WAV, MP3, MP4, or M4A file and returns English labels with the model's native nine-class scores. The API does not use IEMOCAP or train a model.
+A Windows CPU service built with FastAPI and Uvicorn, using the fine-tuned `iic/emotion2vec_plus_seed` model through FunASR. The `/predict` endpoint accepts one WAV, MP3, MP4, or M4A file and returns English labels with the model's native nine-class scores. `/predict_multi` accepts media plus an XML transcript and returns XML with English segment emotions. The API does not use IEMOCAP or train a model.
 
 ## Project files
 
@@ -59,7 +59,7 @@ curl.exe -X POST http://127.0.0.1:8000/predict -F "file=@test-artifacts/speech.w
 Labels retain the model output order. Bilingual labels such as `吃惊/surprised` are returned as `surprised` in both `labels` and `emotion`. The nine API labels are `angry`, `disgusted`, `fearful`, `happy`, `neutral`, `other`, `sad`, `surprised`, and `<unk>`. Scores are unchanged model softmax outputs, not measured accuracy or calibrated guarantees. Historical results in `reports/` retain the original bilingual responses.
 
 
-## Limits and errors
+## `/predict` limits and errors
 
 | Limit | Implementation |
 | --- | --- |
@@ -111,9 +111,9 @@ Successful responses passed checks for nine corresponding labels/scores, score s
 - [Recorded HTTP responses](reports/http-functional-results.json)
 - [Chinese learning notes](docs/LEARNING.zh-CN.md)
 
-The XML segment endpoint `/predict_multi` is planned and is not implemented in this snapshot. Real XML/media samples are pending.
+The XML segment endpoint `/predict_multi` supports the supplied AudioDoc transcript structure; see the endpoint details below. Supervisor samples remain Git-ignored.
 
-## Reusable segment processing (XML integration pending)
+## Reusable segment processing
 
 `predict_segment(state, source, start, end, filename=None)` accepts a local
 media path and numeric start/end times in seconds and returns a `Prediction`
@@ -158,9 +158,99 @@ also check existing upload duration rejection. They do not validate real-model
 inference or emotion accuracy; `verify_api.py` remains the separate real-speech
 HTTP check.
 
-The future `/predict_multi` endpoint can parse transcript timestamps, call
-`predict_segment` for each speech segment, then write its returned emotion into
-the XML. XML parsing, `Speechsegment` attribute updates, and the endpoint are
-**not implemented**. Integration awaits the supervisor's real XML/media samples
-to establish element names/namespaces, timestamp units and time origin, audio
-track selection, handling of short/long segments, and per-segment failure policy.
+`predict_segment` remains available for individual local-file intervals. The
+multi-segment endpoint instead decodes once and calls the shared
+`predict_samples` function for each interval.
+
+## `POST /predict_multi`
+
+Upload exactly two multipart **file** fields: `file` (WAV, MP3, MP4, or M4A;
+extensions case-insensitive) and `xml` (XML transcript). Missing, duplicated,
+extra, or text-only fields are rejected. Example:
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/predict_multi -F "file=@samples/news-video-with-captions 2.mp4" -F "xml=@samples/news-video-with-captions 1.xml" --output test-artifacts/predicted-transcript.xml
+```
+
+Create `test-artifacts/` first if necessary. Input files are never overwritten.
+A successful response is UTF-8 `application/xml`, with
+`Content-Disposition: attachment; filename="predicted-transcript.xml"`.
+The OpenAPI documentation includes both binary fields.
+
+The accepted structure is one unnamespaced `AudioDoc` root containing exactly
+one direct `SegmentList`, with one or more direct `SpeechSegment` children.
+For each speech segment, `stime` is its start in seconds and `dur` is its
+duration; the interval is `[stime, stime + dur)`. Times are relative to the
+first decoded sample of the first audio track. Segment elements need not be
+time-sorted. Decimal timestamp arithmetic avoids binary-float rounding when
+converting XML values to sample offsets; boundaries round up to 16 kHz samples.
+
+The first audio track is decoded **once per request** into mono, 16 kHz, PCM16
+WAV. Stereo is mixed down; XML `channel="1"` is retained as metadata and does
+not select the left channel. Each interval is read by sample offsets, converted
+to float32, and passed to the already-loaded CPU model through `predict_samples`
+and its inference lock. `/predict` and `/predict_multi` share the request gate;
+blocking decoding and inference run in a worker thread.
+
+Every `SpeechSegment` receives a newly predicted English `emotion`, replacing
+any existing value. Existing emotion annotations are not treated as ground truth.
+All other attributes (including `score`), element order, text/tails, `Word`
+elements, and image/sound captions are preserved semantically. In-root comments
+and processing instructions are retained. Formatting, XML declarations,
+namespace prefixes, quote style, CDATA syntax, and equivalent escaping may change.
+For example, the `<unk>` label is serialized safely as `emotion="&lt;unk&gt;"`.
+There is no custom byte-offset rewriting.
+
+| Multi-endpoint limit | Value |
+| --- | --- |
+| Media file | 128 MiB |
+| XML file | 2 MiB |
+| Total request body, including multipart overhead | 131 MiB; actual bytes counted |
+| Speech segments | 1-1000 |
+| Each speech segment | 0.25-30 seconds inclusive |
+| Decoded audio | At most 30 minutes |
+| FFmpeg timeout | 120 seconds |
+| Decoder duration/output caps | 1801 seconds / 57,697,536 bytes (one extra second detects overlong audio) |
+| Returned XML | At most 16 MiB |
+| XML nesting | At most 128 levels |
+
+DTD and entity declarations, including external DTDs/entities, are rejected
+using encoding-aware parser callbacks. External entities are never resolved.
+All timestamp and sample-range checks finish before any inference begins.
+Incomplete/out-of-range clips are rejected without truncation or silence padding.
+Container duration is not accepted as proof of available audio: a partial MP4
+can declare a longer duration than its physically readable audio packets.
+
+The endpoint returns updated XML **only if every segment succeeds**. Errors
+return JSON: 400 for multipart parser errors; 413 for upload/body limits; 415 for
+unsupported media extensions; 422 for invalid XML/structure, timestamps,
+segment-count/duration/range limits, media decoding errors/timeouts, or decoded/
+response-size limits; 500 for internal/model failures. Segment-specific errors
+identify the **1-based XML element index**, not the chronological position.
+No partial XML is returned. Temporary upload and decoded WAV files are removed
+on success and exceptions; forced process termination may leave files.
+
+The original `/predict` retains its 25 MiB file, 26 MiB body and 0.25-30 second
+duration limits. The 120-second timeout applies to decoding only; CPU inference
+has no whole-request timeout. Up to 1000 segments may therefore take considerable
+time and hold the shared request gate.
+
+Run generated-media/fake-model checks without loading model weights:
+
+```powershell
+conda activate emotion2vec
+python -m unittest -v test_segments test_predict_multi
+```
+
+These verify XML updates/preservation, escaping, rejection paths, upload bounds,
+single decoding, request serialization, worker-thread execution, and cleanup.
+They do not measure classification accuracy. Real-model HTTP verification is
+recorded separately under `reports/`; generated responses/media/logs stay in
+Git-ignored `test-artifacts/`.
+
+The [full-sample verification report](reports/predict-multi-verification-2026-11-02.md)
+records HTTP 200 for all 65 real speech segments in 43.373 seconds excluding
+model startup, with one decode, XML preservation and cleanup checks passing.
+The earlier truncated-file failure was resolved by re-downloading the MP4;
+that failed-run record is retained in the report. These results verify function,
+not classification accuracy.
