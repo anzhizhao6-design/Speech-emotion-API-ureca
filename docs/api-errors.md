@@ -1,68 +1,74 @@
-# API errors / 两个预测接口的报错说明
+<a id="api-errors--两个预测接口的报错说明"></a>
+# API error reference
 
-[English API entry](../README.md#errors) · [中文入口](../README.zh-CN.md#报错) · [调用流程](api-flows.md) · [函数索引](function-index.zh-CN.md)
+[README error entry](../README.md#errors) · [Call flows](api-flows.md) · [Function index](function-index.md)
 
-以下按当前 [app.py](../app.py) 列出触发条件；英文消息保留便于查日志。HTTP 错误体通常为 `{"detail": "..."}`，不是成功 JSON 预测或 XML 附件。多段请求只有全部成功才返回 XML；异常后清理请求临时目录。强制终止进程可能留文件。检查状态码后再解释下载内容。
+This reference follows the current [app.py](../app.py). Original English messages are retained so they can be matched to responses and logs. Error bodies normally use `{"detail": "..."}` rather than a successful prediction object or XML attachment. A multi-segment request returns XML only after every segment succeeds. Request temporary files are cleaned up on success and exceptions; forced process termination can still leave files. Check the HTTP status before treating a downloaded body as XML.
 
-## Shared errors / 共用错误
+<a id="shared-errors--共用错误"></a>
+## Shared errors
 
-这里的“两个接口”指 `/predict` 和 `/predict_multi`；各接口特有条件另见后表。
+In this table, “both” means `/predict` and `/predict_multi`. Endpoint-specific conditions appear in the following sections. Message placeholders such as `n` and `...` represent a segment index or variable detail, not literal response text.
 
-| 状态码 | 适用接口 | 触发条件 | 消息示例/排查 | 产生位置 |
+| Status | Applies to | Trigger | Original message or troubleshooting note | Source |
 | --- | --- | --- | --- | --- |
-| 400 | 两者 | multipart 解析失败、超过允许的文件/文本字段数量、缺少 boundary 等 | `Too many files. Maximum number of files is ...`；确保以文件字段提交，不夹带额外文本字段 | Starlette 表单解析，由 `predict()` / `predict_multi()` 进入 |
-| 413 | 两者 | 实际请求体（包括 multipart 开销）超过路由上限 | `Request body exceeds 26 MiB` 或 `...131 MiB`；不能仅看 Content-Length 或单文件大小 | `BodyLimitMiddleware.__call__.limited_receive()` |
-| 413 | 两者 | 写入的媒体超限；多段接口还单独限制 XML | 单文件 `File exceeds 25 MiB`；多段 `Media exceeds 128 MiB` / `XML exceeds 2 MiB` | `predict()` / `save_multi_upload()`；`parse_transcript()` 也检查 XML 长度 |
-| 415 | 两者 | 媒体后缀不在允许集合中（大小写不敏感） | `Supported file extensions: WAV, MP3, MP4, M4A`；改后缀不等于内容已可解码 | 两个路由 |
-| 422 | 两者 | 必需文件为空 | 单文件 `Empty file`；多段 `Empty media` / `Empty xml` | `predict()` / `save_multi_upload()` |
-| 422 | 两者 | FFmpeg 返回失败或无法选到音轨 | 单文件 `Audio decoding failed`；多段 `Audio decoding failed or file contains no audio track` | `convert_and_predict()` / `predict_transcript()` |
-| 422 | 两者 | 等待媒体工具超时 | 单文件 `Media processing timed out`（FFprobe 20 秒、FFmpeg 45 秒）；多段 `Audio decoding timed out (120 seconds)` | 两个工作函数捕获 `TimeoutExpired` |
-| 500 | 两者 | 模型异常、标签/分数结构不符合约定，或其他未预期内部异常 | 单文件 `Prediction failed; see server log`；多段 `Segment n: prediction failed; see server log` 或 `Transcript prediction failed; see server log`；查服务端完整异常 | `predict_samples()` 的异常由对应工作函数包装 |
-| 404 / 405 | 两者及其他路径 | URL 不存在 / 方法不支持 | 核对完整路径并使用 POST；这类状态由框架路由产生 | FastAPI/Starlette 路由 |
+| 400 | Both | Multipart parsing fails, file/text-field counts exceed the parser limits, or the multipart boundary is missing | `Too many files. Maximum number of files is ...`; submit file fields without extra text fields | Starlette form parser, entered by `predict()` or `predict_multi()` |
+| 413 | Both | The actual request body, including multipart overhead, exceeds the route limit | `Request body exceeds 26 MiB` or `Request body exceeds 131 MiB`; actual bytes are counted, not just Content-Length | `BodyLimitMiddleware.__call__.limited_receive()` |
+| 413 | Both | The media upload exceeds its file limit; the XML route also checks its XML file separately | `/predict`: `File exceeds 25 MiB`; `/predict_multi`: `Media exceeds 128 MiB` or `XML exceeds 2 MiB` | `predict()` / `save_multi_upload()`; `parse_transcript()` also checks XML byte length |
+| 415 | Both | The media extension is unsupported, after case normalization | `Supported file extensions: WAV, MP3, MP4, M4A`; renaming a file does not make its content decodable | Both route handlers |
+| 422 | Both | A required uploaded file is empty | `/predict`: `Empty file`; `/predict_multi`: `Empty media` or `Empty xml` | `predict()` / `save_multi_upload()` |
+| 422 | Both | FFmpeg fails or cannot select the audio track | `/predict`: `Audio decoding failed`; `/predict_multi`: `Audio decoding failed or file contains no audio track` | `convert_and_predict()` / `predict_transcript()` |
+| 422 | Both | A media subprocess times out | `/predict`: `Media processing timed out` (20 seconds for FFprobe, 45 for FFmpeg); `/predict_multi`: `Audio decoding timed out (120 seconds)` | The workers catch `subprocess.TimeoutExpired` |
+| 500 | Both | The model raises, labels/scores violate the output contract, or an unexpected internal failure occurs | `/predict`: `Prediction failed; see server log`; `/predict_multi`: `Segment n: prediction failed; see server log` or `Transcript prediction failed; see server log`; inspect the server exception | `predict_samples()` failures are wrapped by the relevant worker |
+| 404 / 405 | All routes | The URL does not exist / the HTTP method is not supported | Check the path and use POST for prediction. These responses come from framework routing | FastAPI/Starlette routing |
 
-空/重复/错误字段既可能先触发表单的 400，也可能在解析成功后触发下面路由自己的 422；不要将所有 multipart 错误统一理解成 422。原文件和输出文件的大小上限见 README 的限制表。
+Missing, duplicate, or incorrect fields may trigger a parser-level 400 before the handler can apply its own 422 checks. Not every multipart error has the same status. File, body, duration, and output limits are summarized in the [README](../README.md#processing-contract-and-limits).
 
-## POST /predict only / 单文件接口特有错误
+<a id="post-predict-only--单文件接口特有错误"></a>
+## POST /predict only
 
-| 状态码 | 触发条件 | 实际消息 | 产生位置 |
+| Status | Trigger | Original message | Source |
 | --- | --- | --- | --- |
-| 422 | 解析后不是恰好一个名为 `file` 的 UploadFile | `Provide exactly one file in the 'file' field` | `predict()` |
-| 422 | FFprobe 认为容器无效/损坏 | `Invalid or damaged media file` | `convert_and_predict()` |
-| 422 | FFprobe 没有找到第一条音轨 | `File contains no audio track` | `convert_and_predict()` |
-| 422 | 实际解码时长大于 30 秒 | `Audio exceeds 30 seconds` | `convert_and_predict()`；最多解码 31 秒是探测，不是静默截短 |
-| 422 | 实际解码时长小于 0.25 秒 | `Audio must be at least 0.25 seconds` | `convert_and_predict()` |
+| 422 | The parsed form is not exactly one UploadFile named `file` | `Provide exactly one file in the 'file' field` | `predict()` |
+| 422 | FFprobe rejects the container as invalid or damaged | `Invalid or damaged media file` | `convert_and_predict()` |
+| 422 | FFprobe finds no first audio track | `File contains no audio track` | `convert_and_predict()` |
+| 422 | The actual decoded recording is longer than 30 seconds | `Audio exceeds 30 seconds` | `convert_and_predict()`; decoding up to 31 seconds detects overlong audio rather than silently accepting a truncated clip |
+| 422 | The actual decoded recording is shorter than 0.25 seconds | `Audio must be at least 0.25 seconds` | `convert_and_predict()` |
 
-[顺着单文件调用链定位](api-flows.md#post-predict) · [工作函数详情](function-index.zh-CN.md#app-convert-and-predict)
+[Follow the request flow](api-flows.md#post-predict) · [Worker details](function-index.md#app-convert-and-predict)
 
-## POST /predict_multi only / XML 接口特有错误
+<a id="post-predict_multi-only--xml-接口特有错误"></a>
+## POST /predict_multi only
 
-`Segment n` 的 n 是 **XML 文档顺序下从 1 开始的 SpeechSegment 编号**，不是按时间排序的编号。结构级错误还没有可用段时可能没有编号。
+In `Segment n`, **n is the 1-based SpeechSegment position in the original XML document**, not its chronological rank. A document-level structural error may have no usable segment index.
 
-| 状态码 | 触发条件 | 实际消息或前缀 | 产生位置 |
+| Status | Trigger | Original message or prefix | Source |
 | --- | --- | --- | --- |
-| 422 | 解析后不是恰好两个 UploadFile，字段名不是 `file`、`xml` 或重复字段 | `Provide exactly two file fields: 'file' and 'xml'` | `predict_multi()` |
-| 422 | XML 语法/编码错误，DTD、实体声明或外部实体解析，深度超过 128 层 | `Invalid XML: ...`；内部原因为 `DTD and entity declarations/resolution are forbidden` 或 `XML nesting exceeds 128 levels` | `parse_transcript()` 及其回调 |
-| 422 | 根不是无命名空间的 AudioDoc，或直接 SegmentList 不是恰好一个 | `Expected AudioDoc with exactly one SegmentList` | `parse_transcript()` |
-| 422 | 没有直接 SpeechSegment | `Segment 1: no SpeechSegment found` | `parse_transcript()` |
-| 422 | 超过 1000 个直接 SpeechSegment | `Segment 1001: at most 1000 speech segments allowed` | `parse_transcript()` |
-| 422 | 其他位置存在 SpeechSegment，例如嵌在别的节点内 | `Segment n: SpeechSegment must be a direct child of AudioDoc/SegmentList` | `parse_transcript()` |
-| 422 | stime/dur 缺失、不是有效有限数，开始为负或超过 1800 秒，dur 不在 0.25–30 秒 | `Segment n: invalid stime/dur (...)` | `parse_transcript()`；NaN/Infinity 也被拒绝 |
-| 422 | 解码 WAV 大小超过 57,697,536 字节 | `Decoded audio exceeds output-size limit` | `predict_transcript()` |
-| 422 | 解码 WAV 不是单声道/16 kHz/2 字节采样 | `Unexpected decoded audio format` | `predict_transcript()` |
-| 422 | 实际解码帧数超过 1800 秒 | `Decoded audio exceeds 30 minutes` | `predict_transcript()` |
-| 422 | 任意段 first 不在实际音频内，或 last 超过实际帧数 | `Segment n: outside the available audio` | `predict_transcript()` 的首次范围循环，**任何模型调用前** |
-| 422 | 读段时实际 PCM 字节不等于所需采样数 × 2 | `Segment n: incomplete decoded audio` | `predict_transcript()` 的逐段循环 |
-| 422 | 序列化结果大于 16 MiB | `Updated XML exceeds 16 MiB` | `predict_transcript()`；此时可能已推理，但不会返回部分 XML |
+| 422 | The parsed form is not exactly two UploadFiles named `file` and `xml`, including duplicate names | `Provide exactly two file fields: 'file' and 'xml'` | `predict_multi()` |
+| 422 | XML syntax/encoding is invalid, a DTD or entity declaration/resolution is encountered, or nesting exceeds 128 levels | `Invalid XML: ...`; the detail may include `DTD and entity declarations/resolution are forbidden` or `XML nesting exceeds 128 levels` | `parse_transcript()` and its callbacks |
+| 422 | The root is not unnamespaced AudioDoc or there is not exactly one direct SegmentList | `Expected AudioDoc with exactly one SegmentList` | `parse_transcript()` |
+| 422 | No direct SpeechSegment is found | `Segment 1: no SpeechSegment found` | `parse_transcript()` |
+| 422 | There are more than 1000 direct SpeechSegments | `Segment 1001: at most 1000 speech segments allowed` | `parse_transcript()` |
+| 422 | A SpeechSegment occurs elsewhere, such as inside another node | `Segment n: SpeechSegment must be a direct child of AudioDoc/SegmentList` | `parse_transcript()` |
+| 422 | stime/dur is missing or not a valid finite number, start is negative or beyond 1800 seconds, or dur is outside 0.25–30 seconds | `Segment n: invalid stime/dur (...)` | `parse_transcript()`; NaN and Infinity are also rejected |
+| 422 | The decoded WAV exceeds 57,697,536 bytes | `Decoded audio exceeds output-size limit` | `predict_transcript()` |
+| 422 | The decoded WAV is not mono, 16 kHz, with two-byte samples | `Unexpected decoded audio format` | `predict_transcript()` |
+| 422 | The actual decoded frame count represents more than 1800 seconds | `Decoded audio exceeds 30 minutes` | `predict_transcript()` |
+| 422 | Any first offset is outside the actual audio, or a last offset exceeds the available frames | `Segment n: outside the available audio` | The first range-check loop in `predict_transcript()`, **before any inference** |
+| 422 | Reading an interval yields fewer PCM bytes than the required sample count multiplied by two | `Segment n: incomplete decoded audio` | The per-segment loop in `predict_transcript()` |
+| 422 | The serialized response exceeds 16 MiB | `Updated XML exceeds 16 MiB` | `predict_transcript()`; inference may already have run, but no partial XML is returned |
 
-[顺着 XML 调用链定位](api-flows.md#post-predict-multi) · [解析详情](function-index.zh-CN.md#app-parse-transcript) · [工作函数详情](function-index.zh-CN.md#app-predict-transcript)
+[Follow the request flow](api-flows.md#post-predict-multi) · [Parser details](function-index.md#app-parse-transcript) · [Worker details](function-index.md#app-predict-transcript)
 
-## Startup and direct Python calls / 启动和直接函数调用
+<a id="startup-and-direct-python-calls--启动和直接函数调用"></a>
+## Startup and direct Python calls
 
-- 启动找不到 FFmpeg/FFprobe 时，`executable()` 抛出 `RuntimeError("... not found in this Python environment")`；模型缓存/依赖加载失败也会使 lifespan 启动失败。这时尚无就绪服务，不是一次预测的 HTTP 500。见[环境说明](environment.zh-CN.md)。
-- `predict_segment()` / `extract_audio_segment()` 是 Python 工具，不经过路由上传限制或 gate。时间需为有限的 Real 数（拒绝 bool），`0 <= start < end`，单段 0.25–30 秒。它们可直接抛出 HTTPException(422)，但没有 HTTP 请求就不会自动变成网络响应。模型输出错误可作为 ValueError 等继续向调用方传播，调用方负责处理。
-- 单段工具的额外消息是 `Timestamps must be finite numbers with 0 <= start < end`、`Segment must be 0.25-30 seconds`、`Segment is outside the available audio`。其媒体超时为 45 秒，异常同样清理提取临时文件。
-- 不完整媒体的容器头可能仍声明长时长。保留边界拒绝并换成完整输入，不补静音、不跳过片段；[完整验证报告](../reports/predict-multi-verification-2026-11-02.md)保留了这个实际案例及重新下载后的成功记录。
+- If FFmpeg or FFprobe cannot be found, `executable()` raises `RuntimeError` with a message ending in `not found in this Python environment`. Dependency or model-loading failures can also prevent lifespan startup. The service is not ready in that situation; this is not a prediction request returning HTTP 500. See the [environment guide](environment.md).
+- `predict_segment()` and `extract_audio_segment()` are Python helpers. They do not apply route upload limits or acquire the request gate. Times must be finite Real numbers, excluding bool, with `0 <= start < end`; the selected interval must be 0.25–30 seconds. They can raise HTTPException(422), but a direct Python call does not itself produce an HTTP response. Model errors such as ValueError propagate to the caller.
+- The segment helpers also use `Timestamps must be finite numbers with 0 <= start < end`, `Segment must be 0.25-30 seconds`, and `Segment is outside the available audio`. Their FFmpeg timeout is 45 seconds. The temporary segment is cleaned up when the context exits, including on errors.
+- Container metadata may claim a longer duration than the audio that can actually be decoded. Keep boundary validation and supply a complete file; do not pad with silence or skip intervals. The [full verification report](../reports/predict-multi-verification-2026-11-02.md) retains the incomplete-download failure and the successful rerun after re-downloading.
 
-## Reading error evidence / 从验证找证据
+<a id="reading-error-evidence--从验证找证据"></a>
+## Verification evidence
 
-README 的[统一验证表](../README.zh-CN.md#验证)汇总两个接口的测试代码和报告；`tests/test_predict_multi.py` 的拒绝用例使用假模型检查失败前是否调用推理。原始模型分数和 XML 标注不能用来替代人工正确答案。
+The README's [verification table](../README.md#verification) brings together both endpoints' tests and retained reports. The rejection tests in [tests/test_predict_multi.py](../tests/test_predict_multi.py) use a fake model to check that invalid inputs do not reach inference. Existing XML emotions and model scores are not independent ground-truth labels.
