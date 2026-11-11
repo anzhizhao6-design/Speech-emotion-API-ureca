@@ -1,263 +1,121 @@
-# Local Speech Emotion Recognition API
+# Speech Emotion API — two prediction entry points
 
 [简体中文](README.zh-CN.md)
 
-A Windows CPU service built with FastAPI and Uvicorn, using the fine-tuned `iic/emotion2vec_plus_seed` model through FunASR. The `/predict` endpoint accepts one WAV, MP3, MP4, or M4A file and returns English labels with the model's native nine-class scores. `/predict_multi` accepts media plus an XML transcript and returns XML with English segment emotions. The API does not use IEMOCAP or train a model.
+A local Windows CPU FastAPI service using `iic/emotion2vec_plus_seed` through FunASR. Start one server for both endpoints, then choose the matching workflow:
 
-## Project files
+| | `POST /predict` | `POST /predict_multi` |
+| --- | --- | --- |
+| Input | Exactly one multipart file field: `file` | Exactly two multipart **file** fields: `file` (media) and `xml` (transcript) |
+| Media | WAV, MP3, MP4, M4A; case-insensitive extensions | Same formats; the first audio track is mixed to mono |
+| Output | JSON with `filename`, `model`, English `emotion`/`score`, and nine aligned `labels`/`scores` | UTF-8 `application/xml` attachment, `predicted-transcript.xml` |
+| Processing | Predict the complete 0.25–30 second recording | Decode media once; predict each XML speech interval and update its `emotion` |
+| Run | `/docs` → `/predict` → upload `file` → Execute | `/docs` → `/predict_multi` → upload both files → Execute |
+| Follow the code | [Single-file call flow](docs/api-flows.md#post-predict) | [XML call flow](docs/api-flows.md#post-predict-multi) |
+| Find failures/results | [Errors](#errors) · [Verification](#verification) | [Errors](#errors) · [Verification](#verification) |
 
-| File | Responsibility |
-| --- | --- |
-| `app.py` | Loads the shared model; validates uploads; converts media; runs serialized CPU inference; returns JSON or updated XML; cleans up temporary files. |
-| `verify_api.py` | Tests an already running service through real HTTP requests. Converts a supplied speech recording into test formats, checks responses, and saves results. It neither starts the service nor measures recognition accuracy. |
-| `test_segments.py` | Generated-media and fake-model checks for reusable single-segment extraction and inference. |
-| `test_predict_multi.py` | Generated-media and fake-model checks for the XML endpoint, preservation, limits, shared gate, and cleanup. |
-| `requirements.txt` | Pinned API additions, not a complete environment specification. |
-| `environment/pip-snapshot.txt` | Recorded pip snapshot, not a portable Conda lockfile. |
-| `reports/http-functional-results.json` | Saved responses from the previous 18-case POST run. The historical JSON report is committed; generated media remain Git-ignored. |
+## Start and send a request
 
-## Environment and startup
-
-Use a Python 3.10 environment with compatible PyTorch, torchaudio, FunASR and ModelScope installations. The supplied `requirements.txt` contains API additions only. `environment/pip-snapshot.txt` records the original Windows environment and is not a portable lockfile or a clean-install guarantee.
+Run from the repository root in the existing environment:
 
 ```powershell
 conda activate emotion2vec
-python -m pip install -r requirements.txt
-```
-
-Install FFmpeg and FFprobe in this environment or make them available on PATH. The original environment used FFmpeg 6.1.1. Run from this repository root:
-
-```powershell
 python -m uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-Wait for `Application startup complete`. Keep one worker and omit `--reload` to avoid extra model loads. Stop with Ctrl+C. The service searches the environment's `Library/bin` first, then PATH.
-
-## Model and processing
-
-The model loads once per process at startup with `hub="ms"`, `device="cpu"`, and `disable_update=True`. First use downloads official weights; cached startup may still contact the hub. Fully offline startup has not been verified. The default model revision is used, not an immutable pinned revision.
-
-Recorded `model.pt` SHA256: `327e861049c7105a3f8589edfd16543a7cdc0c1926f1b64de975d98e0650cdd3`. Loading emitted missing `AUDIO.decoder` key warnings; subsequent classification requests succeeded.
-
-For `/predict`, FFprobe checks the first audio track. FFmpeg converts it to mono 16 kHz PCM16 WAV, then the service passes float32 NumPy samples to the reused model. `/predict_multi` directly decodes the first audio track once with FFmpeg and checks the actual WAV sample count before predicting any segment; it does not run FFprobe for each request. MP4 video is not analyzed. A shared semaphore serializes prediction request processing and a lock protects inference; torch uses at most four CPU threads. Inference uses `granularity="utterance", extract_embedding=False`.
-
-## Upload and response
-
-Open <http://127.0.0.1:8000/docs> → **POST /predict** → **Try it out** → choose a file in `file` → **Execute**. Upload exactly one multipart file field named `file`, without extra fields. Supported extensions: `.wav`, `.mp3`, `.mp4`, `.m4a`, case-insensitive. Actual content must decode successfully; speech presence is not checked.
-
-<http://127.0.0.1:8000/health> reports readiness, model, and CPU device; it does not perform an inference check. After generating verification artifacts, an upload example is:
+Wait for `Application startup complete`, then open <http://127.0.0.1:8000/docs>. Keep that terminal running; stop with Ctrl+C. Use one worker and omit `--reload` to avoid extra model loads. If port 8000 is occupied, choose another available port and use its URL. `/health` reports readiness without inference. Importing `app.py` alone does not load weights.
 
 ```powershell
-curl.exe -X POST http://127.0.0.1:8000/predict -F "file=@test-artifacts/speech.wav"
-```
-
-| JSON field | Meaning |
-| --- | --- |
-| `filename` | Uploaded filename with directory components removed. |
-| `model` | `iic/emotion2vec_plus_seed`. |
-| `emotion`, `score` | Label and score at the maximum-scoring position. |
-| `labels`, `scores` | All nine labels and corresponding scores, in the actual model output order. |
-
-Labels retain the model output order. Bilingual labels such as `吃惊/surprised` are returned as `surprised` in both `labels` and `emotion`. The nine API labels are `angry`, `disgusted`, `fearful`, `happy`, `neutral`, `other`, `sad`, `surprised`, and `<unk>`. Scores are unchanged model softmax outputs, not measured accuracy or calibrated guarantees. Historical results in `reports/` retain the original bilingual responses.
-
-
-## `/predict` limits and errors
-
-| Limit | Implementation |
-| --- | --- |
-| File size | At most 25 MiB |
-| Request body, including multipart overhead | At most 26 MiB; counted while receiving |
-| Decoded duration | 0.25–30 seconds inclusive |
-| FFprobe / FFmpeg timeout | 20 / 45 seconds |
-| Decode cap for duration checking | 31 seconds; audio over 30 seconds is rejected |
-
-These subprocess timeouts do not impose an inference or whole-request timeout.
-
-| Status | Meaning |
-| --- | --- |
-| 400 | Multipart parsing errors, including multiple files or disallowed extra fields. |
-| 413 | File/body size limit exceeded. |
-| 415 | Unsupported extension. |
-| 422 | Missing/incorrect file field, empty/invalid media, no audio, decoding failure, media-processing timeout, or duration outside limits. |
-| 500 | Internal prediction failure; details are logged server-side. |
-
-Application upload/conversion files use per-request `.tmp/ser-*` directories, cleaned up on normal completion and handled exceptions. Forced termination may leave files. The service is intended for local, single-worker use; authentication and an accuracy-evaluation endpoint are not implemented.
-
-## Functional verification and evaluation scope
-
-The previous run used real speech from the official model's `example/test.wav`. The client generates up to eight seconds of 44.1 kHz stereo WAV, MP3, MP4 with video/AAC audio, and AAC M4A. The M4A is encoded media, not a renamed file; the user's original Windows recording was not tested.
-
-Start the service first, then run from the project directory:
-
-```powershell
-python verify_api.py "path/to/real-speech.wav"
-```
-
-You can supply another real speech path. `--url` overrides `http://127.0.0.1:8000`. The client overwrites generated media and writes `test-artifacts/results.json` after a successful run.
-
-| Saved POST cases (18 total) | Status |
-| --- | --- |
-| WAV, MP3, MP4, M4A; uppercase `.M4A`; three consecutive WAV requests | 200 (8 cases) |
-| Damaged WAV/M4A; no-audio MP4; empty file; too-short/too-long audio | 422 (6 cases) |
-| Unsupported extension | 415 |
-| Multiple files | 400 |
-| Oversized file / body | 413 (2 cases) |
-
-Successful responses passed checks for nine corresponding labels/scores, score sum approximately one, and consistent maximum label/score fields. `/health`, `/docs`, and the OpenAPI multipart schema also passed; `.tmp` was empty after the run. Recorded WAV result: `生气/angry`, score `0.9999990463256836`. Full responses are in `reports/http-functional-results.json`. Silence was used only for duration rejection tests.
-
-**These verify interface behavior and actual model inference, not emotion recognition accuracy.** No independently labeled test set, accuracy metric, or calibration study has been evaluated. A high score on one sample does not establish correctness or generalization. This documentation-only update is based on source inspection and saved results, not a new service test run.
-
-## Documentation and learning guides
-
-- [Functional verification report](reports/functional-verification.md)
-- [Recorded HTTP responses](reports/http-functional-results.json)
-- [XML endpoint verification report](reports/predict-multi-verification-2026-11-02.md)
-
-Read the Chinese learning guides in this order:
-
-1. [01 — Single-file API foundations](docs/01-single-file-api-learning.zh-CN.md): preserves the original beginner notes on Python, HTTP uploads, and `/predict`, with annotations for code that has since moved or changed.
-2. [02 — Segment and XML API walkthrough](docs/02-segment-xml-api-learning.zh-CN.md): follows one current `/predict_multi` request through validation, one-time decoding, sample offsets, shared inference, XML updates, cleanup, and verification; includes a function map and suggested code-reading order.
-
-The XML segment endpoint `/predict_multi` supports the supplied AudioDoc transcript structure; see the endpoint details below. Supervisor samples remain Git-ignored.
-
-## Reusable segment processing
-
-`predict_segment(state, source, start, end, filename=None)` accepts a local
-media path and numeric start/end times in seconds and returns a `Prediction`
-with English labels and aligned scores. Pass the initialized `app.state` to
-reuse the loaded model and inference lock. It makes no internal HTTP requests.
-Async callers should run it through `run_in_threadpool`.
-
-For extraction alone, use the context manager:
-
-```python
-with extract_audio_segment(app.state, media_path, start=12.5, end=15.0) as wav_path:
-    # wav_path is mono, 16 kHz, PCM16 WAV; consume it inside this block.
-    ...
-```
-
-Timestamps must be finite real numbers (excluding booleans), with
-`0 <= start < end`. Intervals are `[start, end)`, relative to the first decoded
-sample of the first audio track. Boundaries round up to the next 16 kHz sample
-(less than 62.5 microseconds). The decoded frame count must match the requested
-interval; partial clips and intervals beyond the available audio raise HTTP 422.
-No silence is padded to satisfy a requested end time.
-
-Each segment retains the existing 0.25-30 second inference limit. Source media
-may exceed 30 seconds and is not subject to `/predict`'s upload-size limits.
-Extraction decodes from the beginning for accurate compressed-media boundaries,
-with a 45-second FFmpeg timeout; long sources or late segments may time out.
-Temporary segment files are removed after success, decoding failure, model
-failure, or an exception in the caller's context. Forced process termination
-can still leave files. Model/output errors propagate to the caller for future
-endpoint error handling. Existing `/predict` behavior and limits are unchanged.
-
-Run the focused checks without starting the API or loading a model:
-
-```powershell
-conda activate emotion2vec
-python -m unittest -v test_segments
-```
-
-These tests use generated WAV/MP4 media for extraction and a fake model for
-inference wiring, lock use, English-label alignment, and failure cleanup. They
-also check existing upload duration rejection. They do not validate real-model
-inference or emotion accuracy; `verify_api.py` remains the separate real-speech
-HTTP check.
-
-`predict_segment` remains available for individual local-file intervals. The
-multi-segment endpoint instead decodes once and calls the shared
-`predict_samples` function for each interval.
-
-## `POST /predict_multi`
-
-Upload exactly two multipart **file** fields: `file` (WAV, MP3, MP4, or M4A;
-extensions case-insensitive) and `xml` (XML transcript). Missing, duplicated,
-extra, or text-only fields are rejected. Example:
-
-```powershell
+curl.exe -X POST http://127.0.0.1:8000/predict -F "file=@path/to/speech.wav"
 curl.exe -X POST http://127.0.0.1:8000/predict_multi -F "file=@samples/news-video-with-captions 2.mp4" -F "xml=@samples/news-video-with-captions 1.xml" --output test-artifacts/predicted-transcript.xml
 ```
 
-Create `test-artifacts/` first if necessary. Input files are never overwritten.
-A successful response is UTF-8 `application/xml`, with
-`Content-Disposition: attachment; filename="predicted-transcript.xml"`.
-The OpenAPI documentation includes both binary fields.
+Create `test-artifacts/` before saving output there. The sample files are local and Git-ignored; they are not bundled with a checkout. On failure, the response is JSON rather than XML, so check the HTTP status before treating the downloaded body as a transcript.
 
-The accepted structure is one unnamespaced `AudioDoc` root containing exactly
-one direct `SegmentList`, with one or more direct `SpeechSegment` children.
-For each speech segment, `stime` is its start in seconds and `dur` is its
-duration; the interval is `[stime, stime + dur)`. Times are relative to the
-first decoded sample of the first audio track. Segment elements need not be
-time-sorted. Decimal timestamp arithmetic avoids binary-float rounding when
-converting XML values to sample offsets; boundaries round up to 16 kHz samples.
+[Environment and model startup details](docs/environment.md) include Python/tool requirements, environment limitations and checkpoint provenance. `requirements.txt` contains API additions, not a complete environment. Model startup may contact the hub even with cached weights; the historical offline verification launcher is not a public app setting. This project performs inference, not training.
 
-The first audio track is decoded **once per request** into mono, 16 kHz, PCM16
-WAV. Stereo is mixed down; XML `channel="1"` is retained as metadata and does
-not select the left channel. Each interval is read by sample offsets, converted
-to float32, and passed to the already-loaded CPU model through `predict_samples`
-and its inference lock. `/predict` and `/predict_multi` share the request gate;
-blocking decoding and inference run in a worker thread.
+## Processing contract and limits
 
-Every `SpeechSegment` receives a newly predicted English `emotion`, replacing
-any existing value. Existing emotion annotations are not treated as ground truth.
-All other attributes (including `score`), element order, text/tails, `Word`
-elements, and image/sound captions are preserved semantically. In-root comments
-and processing instructions are retained. Formatting, XML declarations,
-namespace prefixes, quote style, CDATA syntax, and equivalent escaping may change.
-For example, the `<unk>` label is serialized safely as `emotion="&lt;unk&gt;"`.
-There is no custom byte-offset rewriting.
+`/predict_multi` accepts one unnamespaced `AudioDoc` root with exactly one direct `SegmentList` and 1–1000 direct `SpeechSegment` children. `stime` and `dur` are seconds: `end = stime + dur`; intervals are `[start, end)` relative to the first decoded audio sample. All times and decoded ranges are checked before inference. XML order is preserved even when segments are not chronological.
 
-| Multi-endpoint limit | Value |
-| --- | --- |
-| Media file | 128 MiB |
-| XML file | 2 MiB |
-| Total request body, including multipart overhead | 131 MiB; actual bytes counted |
-| Speech segments | 1-1000 |
-| Each speech segment | 0.25-30 seconds inclusive |
-| Decoded audio | At most 30 minutes |
-| FFmpeg timeout | 120 seconds |
-| Decoder duration/output caps | 1801 seconds / 57,697,536 bytes (one extra second detects overlong audio) |
-| Returned XML | At most 16 MiB |
-| XML nesting | At most 128 levels |
+Only `SpeechSegment.emotion` is added or replaced. Other attributes, including `score`, text/tails, Words and image/sound captions are preserved semantically. In-root comments/PIs are retained; formatting, quotes and equivalent escaping may change. `<unk>` is serialized as `&lt;unk&gt;`. Existing emotions are not ground truth. DTD/entity declarations and external entity resolution are rejected. XML `channel="1"` is metadata, not an instruction to select the left stereo channel.
 
-DTD and entity declarations, including external DTDs/entities, are rejected
-using encoding-aware parser callbacks. External entities are never resolved.
-All timestamp and sample-range checks finish before any inference begins.
-Incomplete/out-of-range clips are rejected without truncation or silence padding.
-Container duration is not accepted as proof of available audio: a partial MP4
-can declare a longer duration than its physically readable audio packets.
+Both routes share the loaded CPU model, request gate and inference lock. Blocking work runs in a threadpool. `/predict` probes with FFprobe before conversion; `/predict_multi` directly decodes the first audio track once with FFmpeg, reads segments by sample offsets and calls **`predict_samples()`**, not `predict_segment()` and not an internal HTTP endpoint. Standard audio is mono, 16 kHz, PCM16 WAV; inference receives float32 NumPy samples.
 
-The endpoint returns updated XML **only if every segment succeeds**. Errors
-return JSON: 400 for multipart parser errors; 413 for upload/body limits; 415 for
-unsupported media extensions; 422 for invalid XML/structure, timestamps,
-segment-count/duration/range limits, media decoding errors/timeouts, or decoded/
-response-size limits; 500 for internal/model failures. Segment-specific errors
-identify the **1-based XML element index**, not the chronological position.
-No partial XML is returned. Temporary upload and decoded WAV files are removed
-on success and exceptions; forced process termination may leave files.
+| Limit | `/predict` | `/predict_multi` |
+| --- | --- | --- |
+| Media file | 25 MiB | 128 MiB |
+| XML file | Not accepted | 2 MiB |
+| Total body including multipart | 26 MiB | 131 MiB |
+| Complete decoded audio | 0.25–30 s | At most 1800 s |
+| Each speech segment | Whole recording is one input | 0.25–30 s |
+| Segment count | Not applicable | 1–1000 |
+| FFprobe timeout | 20 s | Not called in this route |
+| FFmpeg timeout | 45 s | 120 s |
+| Decoder duration cap | 31 s, then reject audio over 30 s | 1801 s, then reject audio over 1800 s |
+| Decoder output cap | Duration/format bounded | 57,697,536 bytes |
+| XML nesting / response size | Not applicable | 128 levels / 16 MiB |
 
-The original `/predict` retains its 25 MiB file, 26 MiB body and 0.25-30 second
-duration limits. The 120-second timeout applies to decoding only; CPU inference
-has no whole-request timeout. Up to 1000 segments may therefore take considerable
-time and hold the shared request gate.
+Subprocess timeouts are not inference, queue-wait or whole-request timeouts. Multi-segment requests return XML only after every segment succeeds; no partial output, truncated clip or silence padding is returned. Request temporary directories are removed on success/errors; forced process termination can leave files.
 
-Run generated-media/fake-model checks without loading model weights:
+English labels retain score alignment: `angry`, `disgusted`, `fearful`, `happy`, `neutral`, `other`, `sad`, `surprised`, `<unk>`. `/predict` selects the maximum score using the model's returned order. Scores are model outputs, not accuracy measurements or calibrated correctness guarantees.
+
+## Python segment function
+
+`predict_segment(state, source, start, end, filename=None)` is a directly callable synchronous Python function in [app.py](app.py), not an HTTP endpoint. Pass the initialized application state to reuse its model and lock. It extracts a temporary mono/16 kHz/PCM16 WAV through `extract_audio_segment()` and returns a `Prediction`; it cleans up on either outcome. Each selected segment must be 0.25–30 seconds; there is no 30-second source-media limit. Extraction has a 45-second timeout and starts decoding from the beginning, so repeated calls are not the multi-endpoint strategy. Async callers should use `run_in_threadpool`.
+
+[Function details and callers](docs/function-index.zh-CN.md#app-predict-segment) · [Shared inference](docs/function-index.zh-CN.md#app-predict-samples)
+
+## Errors
+
+**One lookup for both endpoints:** [API error reference](docs/api-errors.md). It lists shared errors once, then route-specific triggers, status codes, message examples and source functions. Segment errors use the **1-based XML element index**, not chronological order. Startup failures are distinguished from HTTP responses. Invalid media metadata is not proof of decodable content.
+
+## Verification
+
+Run existing generated-media/fake-model tests from the repository root; no server, weights or new dependencies are required beyond the existing environment and FFmpeg:
 
 ```powershell
-conda activate emotion2vec
-python -m unittest -v test_segments test_predict_multi
+python -m unittest discover -s tests -t . -v
+# Targeted modules:
+python -m unittest -v tests.test_audio_segments tests.test_predict_multi
 ```
 
-These verify XML updates/preservation, escaping, rejection paths, upload bounds,
-single decoding, request serialization, worker-thread execution, and cleanup.
-They do not measure classification accuracy. Real-model HTTP verification is
-recorded separately under `reports/`; generated responses/media/logs stay in
-Git-ignored `test-artifacts/`.
+To check a separately running `/predict` service with real speech:
 
-The [full-sample verification report](reports/predict-multi-verification-2026-11-02.md)
-records HTTP 200 for all 65 real speech segments in 43.373 seconds excluding
-model startup, with one decode, XML preservation and cleanup checks passing.
-The earlier truncated-file failure was resolved by re-downloading the MP4;
-that failed-run record is retained in the report. These results verify function,
-not classification accuracy.
+```powershell
+python -m scripts.verify_predict_http "path/to/real-speech.wav" --url http://127.0.0.1:8000
+```
+
+This tool does not start a server or test `/predict_multi`. It converts actual speech into test formats and writes fresh media plus `test-artifacts/results.json`; it does not overwrite historical reports. Its `--help` entry point does not run inference.
+
+| Scope | Code / retained evidence | What it establishes |
+| --- | --- | --- |
+| Single segment preprocessing | [tests/test_audio_segments.py](tests/test_audio_segments.py), 10 tests | Waveform/timestamp accuracy, mono/16 kHz/PCM16, rejection paths, fake inference wiring and cleanup |
+| XML endpoint | [tests/test_predict_multi.py](tests/test_predict_multi.py), 16 tests | 65 generated intervals, English updates/escaping and semantic preservation; invalid uploads/XML/ranges; one decode; gate/threading and cleanup |
+| `/predict` real HTTP regression | [scripts/verify_predict_http.py](scripts/verify_predict_http.py); [historical report](reports/functional-verification.md), [raw responses](reports/http-functional-results.json), [real-model rerun](reports/real-model-segment-verification-2026-10-31.md) | 18 POST cases plus health/docs/schema and label/score checks; original records remain retained |
+| `/predict_multi` real HTTP acceptance | [Full verification report](reports/predict-multi-verification-2026-11-02.md) | HTTP 200, 65 actual model calls, **43.373 s excluding startup**, one decode, XML preservation and cleanup |
+
+The incomplete-download failure remains in the full report as resolved history: replacing the 55,062,440-byte partial video with the verified 71,215,895-byte complete copy fixed the input without relaxed validation. Final local XML: `test-artifacts/supervisor-complete-emotions.xml`. Historical raw responses may contain bilingual labels; current output is English.
+
+**Functional verification is not classification accuracy evaluation.** There is no independently labeled test set, accuracy/F1/confusion matrix, calibration study or systematic performance benchmark. Fake-model tests do not establish real-model correctness. One observed request duration is not a throughput guarantee.
+
+## Code and documentation map
+
+```text
+app.py                       FastAPI entry points, startup and shared processing
+scripts/verify_predict_http.py  Real-HTTP verification CLI for /predict
+tests/                      Generated-media/fake-model unittest package
+docs/                       Call flows, error lookup, function index, learning
+reports/                    Retained functional verification records
+environment/                Recorded dependency snapshot
+samples/                    Local input media/XML (ignored)
+test-artifacts/             Generated outputs/logs (ignored)
+.tmp/                       Per-request working files (ignored)
+```
+
+Both `scripts/` and `tests/` have package entry points; use `python -m ...` or unittest discovery from the root rather than executing their files directly. All three callers import the shared `app` module; moving its state into separate modules would add indirection to the current small application.
+
+- [Call flows for both endpoints](docs/api-flows.md) → [all project-defined functions and methods](docs/function-index.zh-CN.md), including internal helpers and tests.
+- [01 — Single-file foundations (Chinese)](docs/01-single-file-api-learning.zh-CN.md).
+- [02 — Segment/XML request walkthrough (Chinese)](docs/02-segment-xml-api-learning.zh-CN.md).
+- [Environment details](docs/environment.md); [dependency additions](requirements.txt); [recorded pip snapshot](environment/pip-snapshot.txt), not a portable lockfile.

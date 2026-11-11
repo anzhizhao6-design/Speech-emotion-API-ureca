@@ -1,12 +1,14 @@
 # 跟着一条录音读懂本地 SER API
 
+[接口调用流程](api-flows.md) · [集中报错说明](api-errors.md) · [逐函数索引](function-index.zh-CN.md)
+
 > **01：单文件 API 基础学习记录。** 本文保留早期教程，主要学习 `/predict`、Python 语法和 HTTP 请求，不是当前 `app.py` 的逐行镜像。当前代码已经提取共享推理函数，并新增 XML 多片段接口；请接着阅读 [02：分段与 XML API 学习](02-segment-xml-api-learning.zh-CN.md)。本次整理只修改文档，没有重跑推理。
 
 当前阅读时先记住三处变化：`convert_and_predict()` 把波形交给 `predict_samples()`，后者负责模型调用、英文标签转换和结果校验；请求体中间件按路径选择上限；`/predict_multi` 使用一次完整解码，而不是循环调用单段提取函数。下文相应位置另有说明，原有基础讲解继续保留。
 
 假设你在 Windows 录下一段 `我的录音.m4a`，希望上传后得到情绪标签。我们就沿着这条录音的处理过程读代码。
 
-本教程依据单文件 API 阶段的 `app.py` 和 `verify_api.py` 编写。下面的片段部分省略外围缩进和注释，不能当作独立程序逐块运行；与当前源码位置不同之处以更新说明为准。明确写着“教学例子”的内容只是帮助理解，不是项目增加的功能。当前源码见 [app.py](../app.py) 和 [verify_api.py](../verify_api.py)。
+本教程依据单文件 API 阶段的 `app.py` 和 `scripts/verify_predict_http.py` 编写。下面的片段部分省略外围缩进和注释，不能当作独立程序逐块运行；与当前源码位置不同之处以更新说明为准。明确写着“教学例子”的内容只是帮助理解，不是项目增加的功能。当前源码见 [app.py](../app.py) 和 [scripts/verify_predict_http.py](../scripts/verify_predict_http.py)。
 
 ## 一、先知道谁在做事
 
@@ -18,7 +20,7 @@
 | Uvicorn | 运行 Python 应用，等待指定地址上有人发来消息，把消息交给应用，再把结果送回去。它需要一直运行。 |
 | FastAPI | 按地址找到要执行的 Python 函数，帮助读取上传内容、检查返回数据、提供 `/docs` 页面。 |
 | `app.py` | 写出具体处理规则：怎样检查文件、转换音频、调用模型和返回结果。 |
-| `verify_api.py` | 不通过鼠标选文件，而是用 Python 主动上传测试文件、检查服务的回答。 |
+| `scripts/verify_predict_http.py` | 不通过鼠标选文件，而是用 Python 主动上传测试文件、检查服务的回答。 |
 
 浏览器发来的“请处理这个文件”叫**请求**；服务返回的结果叫**响应**。它们按 HTTP 这种约定好的方式传递。你暂时不需要学习整个 HTTP 协议，只要知道它包含地址、文件或其他数据，以及表示成功或错误的状态码。
 
@@ -394,7 +396,7 @@ async def predict(request: Request):
 
 分数是模型对各类给出的 softmax 数值，也就是模型内部把输出转成一组总和约为 1 的分数。它不是已测得的准确率。某条录音分数高，不足以证明情绪判断正确。
 
-## 八、verify_api.py：用 Python 主动测试服务
+## 八、scripts/verify_predict_http.py：用 Python 主动测试服务
 
 ### 1. 直接运行脚本时进入 main()
 
@@ -487,7 +489,7 @@ if __name__ == "__main__":
 
 ### 7. 成功时只检查数据一致性
 
-> 当前 `verify_api.py` 除下方摘录，还断言 `labels` 的集合正好是九个英文标签；这里保留基础摘录，并非完整成功响应校验代码。
+> 当前 `scripts/verify_predict_http.py` 除下方摘录，还断言 `labels` 的集合正好是九个英文标签；这里保留基础摘录，并非完整成功响应校验代码。
 
 ```python
                 assert len(data["labels"]) == len(data["scores"]) == 9
@@ -615,10 +617,10 @@ app.add_middleware(BodyLimitMiddleware)
 
 ### 1. 在 PowerShell 启动后台程序
 
-> 本节保留当时的本机命令作为记录；其中 `ser-api` 是旧目录示例，不是当前仓库名。现在请在 `Speech-emotion-API-ureca` 根目录按 [中文 README](../README.zh-CN.md) 的通用命令启动，并使用自己的环境路径，不要照抄旧绝对路径。
+> 本节命令使用示例本机路径。请在实际仓库根目录按 [中文 README](../README.zh-CN.md) 的通用命令启动，并使用自己的环境路径，不要照抄旧绝对路径。
 
 ```powershell
-Set-Location 'C:\Users\36043\Desktop\uni\ureca\ser-api'
+Set-Location 'C:\Users\36043\Desktop\uni\ureca\Speech-emotion-API-ureca'
 & 'C:\Users\36043\miniconda3\envs\emotion2vec\python.exe' -m uvicorn app:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
@@ -641,8 +643,8 @@ http://127.0.0.1:8000/docs
 ### 3. 想运行整套测试时，另开一个 PowerShell
 
 ```powershell
-Set-Location 'C:\Users\36043\Desktop\uni\ureca\ser-api'
-& 'C:\Users\36043\miniconda3\envs\emotion2vec\python.exe' verify_api.py 'C:\Users\36043\.cache\modelscope\models\iic--emotion2vec_plus_seed\snapshots\master\example\test.wav'
+Set-Location 'C:\Users\36043\Desktop\uni\ureca\Speech-emotion-API-ureca'
+& 'C:\Users\36043\miniconda3\envs\emotion2vec\python.exe' -m scripts.verify_predict_http 'C:\Users\36043\.cache\modelscope\models\iic--emotion2vec_plus_seed\snapshots\master\example\test.wav'
 ```
 
 这个可选命令主动测试第一个窗口中的服务，末尾是官方模型附带的真实语音路径，可替换成自己的真实录音。它会覆盖生成的测试文件。测试脚本结束不等于服务结束；本次文档改写没有执行这条命令。

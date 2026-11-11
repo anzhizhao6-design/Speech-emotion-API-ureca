@@ -125,7 +125,7 @@ comparison confirmed all content/attributes except emotion were unchanged,
 including scores 0.98/0.97. Output is saved, Git-ignored, at
 `test-artifacts/cached-real-speech-emotions.xml`.
 
-The unchanged verify_api.py then passed all **18 POST cases** against that same
+The unchanged scripts/verify_predict_http.py then passed all **18 POST cases** against that same
 server: 8 successes (WAV/MP3/MP4/M4A, uppercase M4A, repeated requests), 6 expected
 422 rejections, one 415, one 400 and two 413 cases. Health, docs, multipart schema,
 English-label/score/max-field checks and temporary-directory cleanup also passed.

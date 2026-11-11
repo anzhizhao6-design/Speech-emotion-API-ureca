@@ -1,6 +1,8 @@
 # 02：跟着一次媒体＋XML 请求读懂分段情绪 API
 
-先读 [01：单文件 API 基础](01-single-file-api-learning.zh-CN.md)，再打开 [app.py](../app.py) 对照本文。本文依据当前源码，也核对了 [verify_api.py](../verify_api.py)、[test_segments.py](../test_segments.py)、[test_predict_multi.py](../test_predict_multi.py) 和已保存的[验证报告](../reports/predict-multi-verification-2026-11-02.md)。本次整理没有运行模型。
+[接口调用流程](api-flows.md) · [集中报错说明](api-errors.md) · [逐函数索引](function-index.zh-CN.md)
+
+先读 [01：单文件 API 基础](01-single-file-api-learning.zh-CN.md)，再打开 [app.py](../app.py) 对照本文。本文依据当前源码，也核对了 [scripts/verify_predict_http.py](../scripts/verify_predict_http.py)、[tests/test_audio_segments.py](../tests/test_audio_segments.py)、[tests/test_predict_multi.py](../tests/test_predict_multi.py) 和已保存的[验证报告](../reports/predict-multi-verification-2026-11-02.md)。本次整理没有运行模型。
 
 下面沿着“一次用户上传完整媒体和 XML，最后下载新 XML”的顺序阅读。代码片段均是相关函数的短摘录；外围分支、缩进或参数可能省略，不能把它们逐块粘贴当作完整程序运行。标为“示意”的数据不是模型实测结果。各节都按“代码 → 解释 → 输入/输出 → 下一步”展开。
 
@@ -391,7 +393,7 @@ MULTI_WAV_BYTES = (MULTI_SECONDS + 1) * 16000 * 2 + 65536
 
 ## 17. 三种验证：假模型、真实功能、准确率评估
 
-**代码摘录（`test_predict_multi.py`）：**
+**代码摘录（`tests/test_predict_multi.py`）：**
 
 ```python
 with patch.object(app.subprocess, 'run', wraps=subprocess.run) as run:
@@ -403,14 +405,14 @@ self.assertEqual(run.call_count, 1)
 
 | 文件/证据 | 验证什么 | 不证明什么 |
 | --- | --- | --- |
-| [test_segments.py](../test_segments.py)，10 项 | 生成音频的截取时点/波形、mono/16 kHz/PCM16、非法时间和越界、英文对齐及清理 | 函数名里的 `accuracy` 指提取准确，不是情绪分类准确率 |
-| [test_predict_multi.py](../test_predict_multi.py)，16 项 | HTTP 字段、XML 保留/覆盖/转义、安全拒绝、先校验、只解码一次、65 段假推理、1000 段边界、共享 gate、线程调度和失败清理 | TestClient 不通过实际 TCP 服务；假模型不会验证真实权重 |
-| [verify_api.py](../verify_api.py) | 先启动服务，再用真实语音转换各格式，通过实际 HTTP 检查 `/predict` 的 18 个 POST 用例、健康页/文档/结构及清理 | 它没有实现 `/predict_multi` 客户端，也不自动启动服务，不算准确率 |
+| [tests/test_audio_segments.py](../tests/test_audio_segments.py)，10 项 | 生成音频的截取时点/波形、mono/16 kHz/PCM16、非法时间和越界、英文对齐及清理 | 函数名里的 `accuracy` 指提取准确，不是情绪分类准确率 |
+| [tests/test_predict_multi.py](../tests/test_predict_multi.py)，16 项 | HTTP 字段、XML 保留/覆盖/转义、安全拒绝、先校验、只解码一次、65 段假推理、1000 段边界、共享 gate、线程调度和失败清理 | TestClient 不通过实际 TCP 服务；假模型不会验证真实权重 |
+| [scripts/verify_predict_http.py](../scripts/verify_predict_http.py) | 先启动服务，再用真实语音转换各格式，通过实际 HTTP 检查 `/predict` 的 18 个 POST 用例、健康页/文档/结构及清理 | 它没有实现 `/predict_multi` 客户端，也不自动启动服务，不算准确率 |
 | [真实验证报告](../reports/predict-multi-verification-2026-11-02.md) | 缓存真实模型＋完整真实 MP4＋原 XML，经实际 HTTP 完成 65 段 | 一段视频不能代表跨语言、跨场景泛化或标注一致性 |
 
-生成的正弦波/静音可检查媒体处理和限制，不能当作真实情绪验证数据。部分大小/超时分支测试临时缩小常量，不代表每次都上传 128 MiB。`verify_api.py` 运行成功后写的是 `test-artifacts/results.json`，不是覆盖历史 `reports/http-functional-results.json`。
+生成的正弦波/静音可检查媒体处理和限制，不能当作真实情绪验证数据。部分大小/超时分支测试临时缩小常量，不代表每次都上传 128 MiB。`scripts/verify_predict_http.py` 运行成功后写的是 `test-artifacts/results.json`，不是覆盖历史 `reports/http-functional-results.json`。
 
-可阅读而不立即执行的测试命令：`python -m unittest -v test_segments test_predict_multi`。它们不调用真实模型；`verify_api.py` 则需要正在运行的真实服务。不要把学习文档中的命令理解为本次已重新执行。
+可阅读而不立即执行的测试命令：`python -m unittest -v tests.test_audio_segments tests.test_predict_multi`。它们不调用真实模型；`scripts/verify_predict_http.py` 则需要正在运行的真实服务。不要把学习文档中的命令理解为本次已重新执行。
 
 **输入/输出：** 可控测试输入或真实语音请求 → 断言结果/功能报告；只有另建独立人工标注集并比较预测，才谈准确率等指标。
 
@@ -516,8 +518,8 @@ TEMP_ROOT = Path(__file__).parent / ".tmp"
 | 文件/目录 | 作用 |
 | --- | --- |
 | [app.py](../app.py) | 服务及可复用媒体/推理/XML 函数 |
-| [verify_api.py](../verify_api.py) | 对已启动 `/predict` 服务做真实 HTTP 功能检查 |
-| [test_segments.py](../test_segments.py)、[test_predict_multi.py](../test_predict_multi.py) | 无需加载真实模型的媒体/假模型测试 |
+| [scripts/verify_predict_http.py](../scripts/verify_predict_http.py) | 对已启动 `/predict` 服务做真实 HTTP 功能检查 |
+| [tests/test_audio_segments.py](../tests/test_audio_segments.py)、[tests/test_predict_multi.py](../tests/test_predict_multi.py) | 无需加载真实模型的媒体/假模型测试 |
 | [README.md](../README.md)、[README.zh-CN.md](../README.zh-CN.md) | 两种语言的使用、字段、限制和文档入口 |
 | `docs/` | 01 单文件基础、02 当前分段 XML 流程，都是学习材料 |
 | `reports/` | 已保存的功能验证证据和报告，区分历史与当前运行 |
@@ -553,7 +555,7 @@ element.set("emotion", result.emotion)
 4. 读 `predict_transcript()`：第一轮只验范围，第二轮读采样/推理/改属性，最后序列化。
 5. 读 `predict_samples()` 和 `english_label()`，追踪索引、标签、分数对齐；再回看 `lifespan()` 理解共享模型从哪来。
 6. 对比 `predict()`、`convert_and_predict()` 与 `predict_segment()`，确认它们不是 XML 路由的内部 HTTP 调用。
-7. 读两份测试中的成功用例、故意失败用例和 `tree_signature()`，最后读 `verify_api.py` 及[真实报告](../reports/predict-multi-verification-2026-11-02.md)。
+7. 读两份测试中的成功用例、故意失败用例和 `tree_signature()`，最后读 `scripts/verify_predict_http.py` 及[真实报告](../reports/predict-multi-verification-2026-11-02.md)。
 
 目前可以向 Zin 汇报：
 

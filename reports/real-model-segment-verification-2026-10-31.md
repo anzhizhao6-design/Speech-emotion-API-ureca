@@ -38,7 +38,7 @@ prediction, and `.tmp` was empty after the segment checks.
 ## Original API regression checks
 
 Started an owned loopback server on an OS-assigned available port, avoiding any
-existing server. Ran the unchanged `verify_api.py` with the real speech path and
+existing server. Ran the unchanged `scripts/verify_predict_http.py` with the real speech path and
 `--url` pointing to that server. The verifier exited successfully.
 
 | POST cases | Expected and observed | Count |

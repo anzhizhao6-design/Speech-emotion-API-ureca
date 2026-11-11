@@ -12,7 +12,7 @@ This report summarizes the 18 saved POST responses supplied with the existing lo
 | Multiple files | 400 | 1 |
 | Oversized file and request body | 413 | 2 |
 
-All 18 saved responses match the status expectations in `verify_api.py`. Successful saved responses contain nine corresponding labels/scores, a consistent maximum emotion/score, and scores summing approximately to one. Original documentation reports health/docs/schema checks and an empty temporary directory; those observations cannot be independently reconstructed from the POST response JSON alone.
+All 18 saved responses match the status expectations in `scripts/verify_predict_http.py`. Successful saved responses contain nine corresponding labels/scores, a consistent maximum emotion/score, and scores summing approximately to one. Original documentation reports health/docs/schema checks and an empty temporary directory; those observations cannot be independently reconstructed from the POST response JSON alone.
 
 The original documented input was the model-provided example speech recording, converted to multiple formats. Media files, logs, model weights and personal paths are excluded from this repository. See `http-functional-results.json` for the saved responses.
 
@@ -25,7 +25,7 @@ These are functional checks, not an accuracy or performance benchmark. Classific
 Start the service as described in the root README. In a second terminal, using the same environment and repository root:
 
 ```powershell
-python verify_api.py "path/to/real-speech.wav"
+python -m scripts.verify_predict_http "path/to/real-speech.wav"
 ```
 
 The script writes generated media and a new `test-artifacts/results.json`. It does not overwrite the historical report committed here.
